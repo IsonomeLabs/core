@@ -22,6 +22,10 @@ from typing import Any, Sequence
 
 from isonome.base import BasePillar
 from isonome.equilibrium import EquilibriumEngine
+from isonome.equilibrium.task_type_homeostasis import (
+    TaskTypeHomeostasis,
+    infer_task_type,
+)
 from isonome.types import (
     AgentIdentity,
     AgentLifecycle,
@@ -95,6 +99,16 @@ class IsonomeAgent:
         self._tick_count: int = 0
         self._task_queue: deque[Task] = deque()
 
+        # Task-type adaptive homeostasis — learns tension default profiles
+        # per task type, enabling pre-adaptation on new tasks
+        axis_order = tuple(
+            a.id for a in (axes or EquilibriumEngine.DEFAULT_AXES)
+        )
+        self._task_type_homeostasis = TaskTypeHomeostasis(
+            axis_order=axis_order,
+        )
+        self._current_task_type: str | None = None
+
     # ── Properties ──────────────────────────────────────────────
 
     @property
@@ -108,6 +122,16 @@ class IsonomeAgent:
     @property
     def mneme(self) -> BasePillar | None:
         return self._mneme
+
+    @property
+    def task_type_homeostasis(self) -> TaskTypeHomeostasis:
+        """The task-type adaptive homeostasis system."""
+        return self._task_type_homeostasis
+
+    @property
+    def current_task_type(self) -> str | None:
+        """The task type of the most recently submitted task, or None."""
+        return self._current_task_type
 
     @property
     def lifecycle(self) -> AgentLifecycle:
@@ -143,9 +167,33 @@ class IsonomeAgent:
 
         Tasks flow through all three pillars: Cognition plans,
         Praxis executes, and Mneme learns from the result.
+
+        Additionally, the agent infers the task type from the
+        description and pre-adapts its tension defaults if the
+        task type has a learned homeostatic profile.
         """
         self._task_queue.append(task)
-        logger.info(f"Task '{task.description}' submitted (id={task.id})")
+
+        # ── Task-type adaptive homeostasis ──
+        inferred_type = infer_task_type(task.description)
+        self._current_task_type = inferred_type
+
+        logger.info(
+            f"Task '{task.description}' submitted (id={task.id}, "
+            f"type={inferred_type})"
+        )
+
+        # Pre-adapt defaults if we have a converged profile for this type
+        profile = self._task_type_homeostasis.get_profile(inferred_type)
+        if profile is not None and profile.is_converged:
+            adjusted = self._task_type_homeostasis.soft_pre_adapt(
+                self.engine, inferred_type,
+            )
+            if adjusted > 0:
+                logger.info(
+                    f"TaskTypeHomeostasis: pre-adapted {adjusted} axes for "
+                    f"task type '{inferred_type}'"
+                )
 
     def has_work(self) -> bool:
         """Whether the agent has pending tasks to process."""
@@ -318,6 +366,15 @@ class IsonomeAgent:
             if report.actions_retried > 0 and report.actions_retried / max(1, report.actions_total) > 0.3:
                 engine.adjust_default("verify_execute", outcome_signal=-0.25)
 
+        # ── Mechanism 3: Record defaults for task-type homeostasis ──
+        # After processing outcomes, record the updated default positions
+        # for the current task type. This builds up the profile that
+        # enables pre-adaptation on future tasks.
+        if self._current_task_type is not None and report.actions_total > 2:
+            self._task_type_homeostasis.record_defaults(
+                engine, task_type=self._current_task_type,
+            )
+
     # ── Serialization ──────────────────────────────────────────────
 
     def to_dict(self) -> dict[str, Any]:
@@ -338,6 +395,8 @@ class IsonomeAgent:
                 "created_at": self.identity.created_at.isoformat(),
             },
             "engine": self.engine.to_dict(),
+            "task_type_homeostasis": self._task_type_homeostasis.to_dict(),
+            "current_task_type": self._current_task_type,
             "tick_count": self._tick_count,
             "signals_sent": self._signals_sent,
             "feedback_applied": self._feedback_applied,
@@ -409,6 +468,12 @@ class IsonomeAgent:
             from isonome.equilibrium import EquilibriumEngine
             agent.engine = EquilibriumEngine.from_dict(engine_data)
 
+        # Restore task-type homeostasis
+        ht_data = data.get("task_type_homeostasis", {})
+        if ht_data:
+            agent._task_type_homeostasis = TaskTypeHomeostasis.from_dict(ht_data)
+        agent._current_task_type = data.get("current_task_type")
+
         # Restore counters
         agent._tick_count = int(data.get("tick_count", 0))
         agent._signals_sent = int(data.get("signals_sent", 0))
@@ -445,4 +510,5 @@ class IsonomeAgent:
             "task_queue_depth": len(self._task_queue),
             "lifecycle": self.state.lifecycle,
             "stress": round(self.get_stress_level(), 4),
+            "task_type_homeostasis": self._task_type_homeostasis.summary(),
         }
