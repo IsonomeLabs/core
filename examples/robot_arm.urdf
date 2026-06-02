@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<robot name="dummy_arm">
+  <link name="base_link"/>
+  <joint name="j1" type="revolute"><parent link="base_link"/><child link="l1"/><axis xyz="0 0 1"/></joint>
+  <link name="l1"/>
+  <joint name="j2" type="revolute"><parent link="l1"/><child link="l2"/><axis xyz="0 1 0"/></joint>
+  <link name="l2"/>
+  <joint name="j3" type="revolute"><parent link="l2"/><child link="l3"/><axis xyz="0 1 0"/></joint>
+  <link name="l3"/>
+  <joint name="j4" type="revolute"><parent link="l3"/><child link="l4"/><axis xyz="1 0 0"/></joint>
+  <link name="l4"/>
+  <joint name="j5" type="revolute"><parent link="l4"/><child link="l5"/><axis xyz="0 1 0"/></joint>
+  <link name="l5"/>
+  <joint name="j6" type="revolute"><parent link="l5"/><child link="l6"/><axis xyz="1 0 0"/></joint>
+  <link name="l6"/>
+  <joint name="j7" type="revolute"><parent link="l6"/><child link="l7"/><axis xyz="0 1 0"/></joint>
+  <link name="l7"/>
+</robot>
