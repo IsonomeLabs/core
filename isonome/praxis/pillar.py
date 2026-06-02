@@ -1,0 +1,352 @@
+"""PraxisPillar — BasePillar wrapper for the ActionOrchestrator system.
+
+Integrates the action orchestration system into the agent lifecycle:
+    - initialize: Creates the ActionOrchestrator instance
+    - tick: Runs execution batch, emits feedback about success/failure rates
+    - signals: Handles 'execute_plan', 'execute_single', 'import_plan', 'cancel_action'
+    - shutdown: Serializes execution state for cross-session persistence
+
+Design: The PraxisPillar wraps an ActionOrchestrator and acts as the bridge
+between the equilibrium engine (tension modulation of execution behavior)
+and the actual tool execution. It receives plans from Cognition, executes
+actions with appropriate safety/parallelism/verification, and provides
+execution results to Mneme for learning.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Callable
+
+from isonome.base import BasePillar
+from isonome.praxis.orchestrator import (
+    Action,
+    ActionOrchestrator,
+    ActionRisk,
+    ActionState,
+    ExecutionReport,
+    RetryPolicy,
+)
+from isonome.types import (
+    AgentState,
+    Feedback,
+    Pillar,
+    Signal,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class PraxisPillar(BasePillar):
+    """The Praxis pillar — wraps ActionOrchestrator for agent integration.
+
+    On each tick (via process_queued → _on_signal), the pillar:
+    1. Reads the tension profile from the agent state
+    2. Sets it on the orchestrator so execution behavior is modulated
+    3. Processes any incoming signals (execute_plan, import_plan, etc.)
+    4. Emits Feedback to the equilibrium engine about execution outcomes
+
+    Usage:
+        praxis = PraxisPillar(
+            name="executor",
+            executor_fn=my_tool_runner,
+            validator_fn=my_validator,
+        )
+        # Set tension profile each tick:
+        praxis.orchestrator.set_tension_profile(agent.get_tension_profile())
+        # Import a plan from cognition:
+        praxis.import_plan(cognition_tasks)
+        # Execute pending actions:
+        report = praxis.execute_pending()
+        # Get results for mneme:
+        results = praxis.get_execution_memories()
+    """
+
+    def __init__(
+        self,
+        name: str | None = None,
+        *,
+        executor_fn: Callable[[Action], Any] | None = None,
+        validator_fn: Callable[[Action, Any], tuple[bool, float]] | None = None,
+        approve_fn: Callable[[Action], bool] | None = None,
+        max_parallel: int = 8,
+        default_retry_policy: RetryPolicy | None = None,
+    ):
+        """Initialize the Praxis pillar.
+
+        Args:
+            name: Pillar display name.
+            executor_fn: Called for each action — actually executes the tool.
+            validator_fn: Optional post-execution validation.
+            approve_fn: Optional callback to approve safety-gated actions.
+            max_parallel: Maximum concurrent executions.
+            default_retry_policy: Fallback retry policy.
+        """
+        super().__init__(name=name)
+        self._executor_fn = executor_fn
+        self._validator_fn = validator_fn
+        self._approve_fn = approve_fn
+        self._max_parallel = max_parallel
+        self._default_retry = default_retry_policy
+        self.orchestrator: ActionOrchestrator | None = None
+        self._last_report: ExecutionReport | None = None
+
+    # ── Abstract interface ──────────────────────────────────────
+
+    @property
+    def pillar(self) -> Pillar:
+        return Pillar.PRAXIS
+
+    def _on_initialize(self, state: AgentState) -> None:
+        """Create the ActionOrchestrator system."""
+        self.orchestrator = ActionOrchestrator(
+            max_parallel=self._max_parallel,
+            default_retry_policy=self._default_retry,
+        )
+        # Set initial tension profile from agent state
+        if state.tensions is not None:
+            profile = {}
+            for axis in state.tensions.axes:
+                profile[axis.id] = axis.position
+            self.orchestrator.set_tension_profile(profile)
+        logger.info(f"{self.name}: ActionOrchestrator initialized")
+
+    def _on_signal(self, signal: Signal) -> None:
+        """Handle incoming signals from other pillars.
+
+        Supported signal kinds:
+            - 'import_plan': Convert cognition plan into actions.
+              payload: {tasks: [{description, tool_name, ...}]}
+            - 'execute_plan': Import and immediately execute.
+              payload: {tasks: [...]}
+            - 'execute_single': Execute a single action.
+              payload: {description, tool_name, params?, risk?, ...}
+            - 'execute_pending': Run all pending actions.
+              payload: {} (no extra data needed)
+            - 'cancel_action': Cancel a specific action.
+              payload: {action_id: str}
+            - 'cancel_all': Cancel all non-completed actions.
+              payload: {}
+        """
+        if self.orchestrator is None:
+            logger.warning(f"{self.name}: not initialized, ignoring signal")
+            return
+
+        kind = signal.kind
+        payload = signal.payload
+
+        try:
+            if kind == "import_plan":
+                tasks = payload.get("tasks", [])
+                if tasks:
+                    ids = self.orchestrator.import_from_cognition(tasks)
+                    logger.info(
+                        f"{self.name}: imported {len(ids)} actions from plan"
+                    )
+
+            elif kind == "execute_plan":
+                tasks = payload.get("tasks", [])
+                if tasks:
+                    self.orchestrator.import_from_cognition(tasks)
+                self._run_execution_batch()
+
+            elif kind == "execute_single":
+                action = Action(
+                    description=payload.get("description", ""),
+                    tool_name=payload.get("tool_name", "unknown"),
+                    params=payload.get("params", {}),
+                    risk=ActionRisk[payload.get("risk", "LOW").upper()],
+                    preconditions=tuple(payload.get("preconditions", ())),
+                    tags=tuple(payload.get("tags", ())),
+                )
+                self.orchestrator.register_action(action)
+                self._run_execution_batch()
+
+            elif kind == "execute_pending":
+                self._run_execution_batch()
+
+            elif kind == "cancel_action":
+                from uuid import UUID
+                action_id = UUID(payload.get("action_id", ""))
+                if action_id in self.orchestrator.action_states:
+                    self.orchestrator._states[action_id] = ActionState.CANCELLED
+                    logger.info(f"{self.name}: cancelled action {action_id}")
+
+            elif kind == "cancel_all":
+                count = 0
+                for aid, state in self.orchestrator.action_states.items():
+                    if state not in (
+                        ActionState.COMPLETED,
+                        ActionState.FAILED,
+                        ActionState.CANCELLED,
+                    ):
+                        self.orchestrator._states[aid] = ActionState.CANCELLED
+                        count += 1
+                logger.info(f"{self.name}: cancelled {count} actions")
+
+            else:
+                logger.debug(f"{self.name}: unknown signal kind '{kind}'")
+
+        except Exception:
+            logger.exception(f"{self.name}: error handling signal {kind}")
+
+    def _on_shutdown(self) -> None:
+        """Serialize execution state for cross-session persistence."""
+        if self.orchestrator is not None:
+            try:
+                state = self.orchestrator.to_dict()
+                total = self.orchestrator.total_actions
+                completed = len(self.orchestrator.completed_actions)
+                logger.info(
+                    f"{self.name}: shutting down — "
+                    f"{total} actions registered, {completed} completed, "
+                    f"{len(self.orchestrator.failed_actions)} failed"
+                )
+            except Exception:
+                logger.exception(f"{self.name}: error serializing state")
+
+    # ── Execution ─────────────────────────────────────────────────
+
+    def _run_execution_batch(self) -> None:
+        """Run a full execution batch on the orchestrator.
+
+        After execution, emits feedback to the equilibrium engine
+        based on success/failure rates.
+        """
+        if self._executor_fn is None:
+            logger.warning(f"{self.name}: no executor_fn configured, cannot execute")
+            return
+
+        self._last_report = self.orchestrator.execute_batch(
+            executor_fn=self._executor_fn,
+            validator_fn=self._validator_fn,
+            approve_fn=self._approve_fn,
+        )
+
+        # Emit feedback for each Praxis tension axis
+        self._emit_execution_feedback(self._last_report)
+
+    # ── Feedback ──────────────────────────────────────────────────
+
+    def _emit_execution_feedback(self, report: ExecutionReport) -> None:
+        """Emit equilibrium feedback based on execution outcomes.
+
+        Three feedback axes:
+        1. autonomy_safety: High success → push autonomous; high failures → push safe
+        2. sequential_parallel: DAG parallelism in use → reinforce parallel if successful
+        3. verify_execute: Validation failures → push toward verify_heavy;
+           smooth execution → push toward execute_fast
+        """
+        # ── autonomy_safety feedback ──────────────────────────
+        if report.actions_total == 0:
+            return
+
+        # Success rate feedback: high success → autonomous, low → safe
+        if report.success_rate >= 0.95:
+            auto_signal = 0.15  # Push toward autonomous
+        elif report.success_rate >= 0.80:
+            auto_signal = 0.05
+        elif report.success_rate < 0.50:
+            auto_signal = -0.20  # Push toward safe
+        elif report.success_rate < 0.70:
+            auto_signal = -0.08
+        else:
+            auto_signal = 0.0
+
+        # Gate blocks intensify safe push
+        if report.gate_blocks > 0:
+            auto_signal -= 0.05 * report.gate_blocks
+
+        self.emit_feedback(
+            Feedback(
+                source=self.pillar,
+                tension_axis_id="autonomy_safety",
+                signal=max(-1.0, min(1.0, auto_signal)),
+                confidence=0.7,
+                reason=f"success_rate={report.success_rate:.2f}, "
+                       f"blocks={report.gate_blocks}",
+            )
+        )
+
+        # ── sequential_parallel feedback ──────────────────────
+        # If we used parallelism and it succeeded, reinforce parallel
+        if report.parallelism_level > 1 and report.success_rate >= 0.80:
+            para_signal = 0.10
+        elif report.parallelism_level == 1 and report.actions_total > 5:
+            para_signal = -0.08  # Sequential with many actions → push parallel
+        else:
+            para_signal = 0.0
+
+        self.emit_feedback(
+            Feedback(
+                source=self.pillar,
+                tension_axis_id="sequential_parallel",
+                signal=max(-1.0, min(1.0, para_signal)),
+                confidence=0.6,
+                reason=f"parallelism={report.parallelism_level}, "
+                       f"actions={report.actions_total}",
+            )
+        )
+
+        # ── verify_execute feedback ───────────────────────────
+        # Low validation scores → push toward verify_heavy
+        if report.avg_validation_score < 0.3 and report.actions_total > 0:
+            verify_signal = -0.12  # Push toward verify_heavy
+        elif report.avg_validation_score >= 0.8:
+            verify_signal = 0.08  # Push toward execute_fast
+        else:
+            verify_signal = 0.0
+
+        self.emit_feedback(
+            Feedback(
+                source=self.pillar,
+                tension_axis_id="verify_execute",
+                signal=max(-1.0, min(1.0, verify_signal)),
+                confidence=0.65,
+                reason=f"avg_validation={report.avg_validation_score:.2f}",
+            )
+        )
+
+    # ── Convenience methods ────────────────────────────────────────
+
+    def update_tension_profile(self, profile: dict) -> None:
+        """Update the orchestrator's tension profile (call each tick)."""
+        if self.orchestrator is not None:
+            self.orchestrator.set_tension_profile(profile)
+
+    def import_plan(self, tasks: list[dict[str, Any]]) -> list:
+        """Import a cognition plan as executable actions."""
+        if self.orchestrator is None:
+            return []
+        return self.orchestrator.import_from_cognition(tasks)
+
+    def execute_pending(self) -> ExecutionReport | None:
+        """Execute all pending actions and return the report."""
+        if self.orchestrator is None or self._executor_fn is None:
+            return None
+        self._run_execution_batch()
+        return self._last_report
+
+    def get_execution_memories(self) -> list[dict[str, Any]]:
+        """Get execution log entries for mneme persistence (πρᾶξις → μνήμη)."""
+        if self.orchestrator is None:
+            return []
+        return self.orchestrator.export_to_mneme()
+
+    def serialize(self) -> dict | None:
+        """Get the full serializable execution state."""
+        if self.orchestrator is None:
+            return None
+        return self.orchestrator.to_dict()
+
+    def restore(self, data: dict) -> None:
+        """Restore execution state from serialized data."""
+        self.orchestrator = ActionOrchestrator.from_dict(data)
+        logger.info(
+            f"{self.name}: restored {self.orchestrator.total_actions} actions"
+        )
+
+    @property
+    def last_report(self) -> ExecutionReport | None:
+        """Most recent execution report, or None."""
+        return self._last_report
