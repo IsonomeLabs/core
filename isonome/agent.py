@@ -17,6 +17,7 @@ adjustment toward equilibrium, not discrete decision points.
 from __future__ import annotations
 
 import logging
+from collections import deque
 from typing import Sequence
 
 from isonome.base import BasePillar
@@ -28,6 +29,8 @@ from isonome.types import (
     Feedback,
     Pillar,
     Signal,
+    Task,
+    TaskStatus,
     TensionAxis,
     TensionSnapshot,
     now,
@@ -90,6 +93,7 @@ class IsonomeAgent:
         self._signals_sent: int = 0
         self._feedback_applied: int = 0
         self._tick_count: int = 0
+        self._task_queue: deque[Task] = deque()
 
     # ── Properties ──────────────────────────────────────────────
 
@@ -131,6 +135,21 @@ class IsonomeAgent:
 
         for pillar in self._pillar_map.values():
             pillar.shutdown()
+
+    # ── Task Management ──────────────────────────────────────────
+
+    def submit_task(self, task: Task) -> None:
+        """Enqueue a task for the agent to work on.
+
+        Tasks flow through all three pillars: Cognition plans,
+        Praxis executes, and Mneme learns from the result.
+        """
+        self._task_queue.append(task)
+        logger.info(f"Task '{task.description}' submitted (id={task.id})")
+
+    def has_work(self) -> bool:
+        """Whether the agent has pending tasks to process."""
+        return len(self._task_queue) > 0
 
     def tick(self) -> TensionSnapshot:
         """Execute one cycle of the agent loop.
@@ -203,6 +222,7 @@ class IsonomeAgent:
             "feedback_applied": self._feedback_applied,
             "oscillation_events": self.engine.total_oscillation_events,
             "pillars_active": len(self._pillar_map),
+            "task_queue_depth": len(self._task_queue),
             "lifecycle": self.state.lifecycle,
             "stress": round(self.get_stress_level(), 4),
         }
