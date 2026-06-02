@@ -36,6 +36,8 @@ from enum import Enum, auto
 from typing import Any, Sequence
 from uuid import UUID, uuid4
 
+import numpy as np
+
 from isonome.types import TensionID
 
 
@@ -181,6 +183,336 @@ class ReasoningStats:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Confidence Calibrator — metacognitive foundation
+# ═══════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class CalibrationBin:
+    """A single bin in the reliability diagram for confidence calibration.
+
+    Each bin covers a confidence interval and tracks how many predictions
+    fell into it and how many were correct, enabling Expected Calibration
+    Error (ECE) computation.
+    """
+
+    lower: float  # inclusive lower bound
+    upper: float  # exclusive upper bound
+    count: int = 0
+    correct: int = 0
+
+    @property
+    def accuracy(self) -> float:
+        """Observed accuracy within this bin."""
+        return self.correct / self.count if self.count > 0 else 0.0
+
+    @property
+    def avg_confidence(self) -> float:
+        """Midpoint confidence for this bin."""
+        return (self.lower + self.upper) / 2.0
+
+    @property
+    def calibration_error(self) -> float:
+        """Absolute difference between predicted confidence and observed accuracy."""
+        return abs(self.accuracy - self.avg_confidence)
+
+    @property
+    def is_populated(self) -> bool:
+        """True if this bin has enough samples to be statistically meaningful."""
+        return self.count >= 3
+
+
+class ConfidenceCalibrator:
+    """Tracks confidence-outcome pairs to measure and improve calibration.
+
+    This is the metacognitive foundation of the isonome framework —
+    the mechanism by which the Cognition pillar learns whether it
+    knows what it thinks it knows. Well-calibrated confidence is
+    essential for:
+      - Tension modulation (explore when uncertain, exploit when confident)
+      - Safety gating in Praxis (actions blocked if confidence < threshold)
+      - Attention allocation (where to spend cognitive budget)
+
+    Mathematical foundation:
+      Expected Calibration Error (ECE):
+        ECE = Σᵢ (nᵢ/N) · |acc(Bᵢ) − conf(Bᵢ)|
+      where bins Bᵢ partition [0, 1], nᵢ is count in bin i,
+      acc(Bᵢ) is observed accuracy, conf(Bᵢ) is bin midpoint.
+
+      Maximum Calibration Error (MCE):
+        MCE = maxᵢ |acc(Bᵢ) − conf(Bᵢ)|
+
+      Adaptive weight adjustment:
+        If overconfident (systematic bias toward high confidence):
+          w_evidence ← w_evidence − Δ (evidence optimism is the culprit)
+          w_child    ← w_child + Δ (child conf is more conservative)
+        If underconfident:
+          w_evidence ← w_evidence + Δ
+          w_child    ← w_child − Δ
+        Δ = 0.01 per adjustment, bounded to [0.2, 0.8]
+
+      Calibrated confidence (isotonic correction):
+        Given raw confidence c, find bins Bₐ, B_b where
+        conf(Bₐ) ≤ c ≤ conf(B_b), then:
+        c_calibrated = acc(Bₐ) + (c − conf(Bₐ)) · (acc(B_b) − acc(Bₐ))
+                                                    / (conf(B_b) − conf(Bₐ))
+
+    Usage:
+      calibrator = ConfidenceCalibrator(num_bins=10, window_size=200)
+      calibrator.record(predicted=0.85, actual_success=True)
+      calibrator.record(predicted=0.72, actual_success=False)
+      ece = calibrator.compute_ece()
+      calibrator.adjust_weights()
+      calibrated = calibrator.calibrate_confidence(raw)
+    """
+
+    # Default weights matching _evaluate_confidence defaults
+    DEFAULT_EVIDENCE_WEIGHT = 0.7
+    DEFAULT_CHILD_WEIGHT = 0.3
+
+    def __init__(
+        self,
+        num_bins: int = 10,
+        window_size: int = 200,
+        drift_threshold: float = 0.05,
+    ):
+        """Initialize the calibrator.
+
+        Args:
+            num_bins: Number of equal-width bins for the reliability diagram.
+            window_size: Maximum recent predictions to track (sliding window).
+            drift_threshold: Minimum |bias| to trigger weight adjustment.
+        """
+        self._bins = [
+            CalibrationBin(i / num_bins, (i + 1) / num_bins)
+            for i in range(num_bins)
+        ]
+        self._predictions: deque[tuple[float, bool]] = deque(maxlen=window_size)
+        self._drift_threshold = drift_threshold
+        self._ece_history: list[float] = []
+
+        # Adaptive weights (evolve with calibration data)
+        self._evidence_weight: float = self.DEFAULT_EVIDENCE_WEIGHT
+        self._child_weight: float = self.DEFAULT_CHILD_WEIGHT
+
+        # Counters
+        self._total_predictions: int = 0
+        self._total_adjustments: int = 0
+
+    # ── Recording ───────────────────────────────────────────────
+
+    def record(self, predicted_confidence: float, actual_success: bool) -> None:
+        """Record a confidence-outcome pair for calibration tracking.
+
+        Args:
+            predicted_confidence: The engine's predicted confidence [0, 1].
+            actual_success: Whether the action actually succeeded.
+        """
+        # Clamp to valid range
+        c = max(0.0, min(1.0, predicted_confidence))
+
+        self._predictions.append((c, actual_success))
+        self._total_predictions += 1
+
+        # Assign to the correct bin
+        assigned = False
+        for b in self._bins:
+            if b.lower <= c < b.upper:
+                b.count += 1
+                if actual_success:
+                    b.correct += 1
+                assigned = True
+                break
+
+        # Edge case: confidence == 1.0 goes in last bin
+        if not assigned and c >= 1.0:
+            self._bins[-1].count += 1
+            if actual_success:
+                self._bins[-1].correct += 1
+
+    # ── Metrics ─────────────────────────────────────────────────
+
+    def compute_ece(self) -> float:
+        """Expected Calibration Error (ECE).
+
+        ECE = Σᵢ (nᵢ/N) · |acc(Bᵢ) − conf(Bᵢ)|
+
+        Lower is better. ECE = 0 means perfect calibration.
+        ECE > 0.15 indicates significant miscalibration.
+        """
+        total = sum(b.count for b in self._bins)
+        if total == 0:
+            return 0.0
+        ece = 0.0
+        for b in self._bins:
+            if b.count > 0:
+                ece += (b.count / total) * b.calibration_error
+        return ece
+
+    def compute_mce(self) -> float:
+        """Maximum Calibration Error — worst-case miscalibration."""
+        populated = [b for b in self._bins if b.count > 0]
+        if not populated:
+            return 0.0
+        return max(b.calibration_error for b in populated)
+
+    def compute_bias(self) -> float:
+        """Weighted bias: positive = overconfident, negative = underconfident."""
+        total = sum(b.count for b in self._bins)
+        if total == 0:
+            return 0.0
+        bias = 0.0
+        for b in self._bins:
+            if b.count > 0:
+                bias += (b.count / total) * (b.avg_confidence - b.accuracy)
+        return bias
+
+    @property
+    def is_overconfident(self) -> bool:
+        """System systematically overestimates confidence."""
+        return self.compute_bias() > self._drift_threshold
+
+    @property
+    def is_underconfident(self) -> bool:
+        """System systematically underestimates confidence."""
+        return self.compute_bias() < -self._drift_threshold
+
+    # ── Adaptive weight adjustment ──────────────────────────────
+
+    def adjust_weights(self) -> bool:
+        """Adjust evidence/child weights to improve calibration.
+
+        Returns True if weights were changed.
+
+        Strategy: When overconfident, the evidence weight (which
+        dominates terminal node confidence) is likely too high —
+        evidence is being interpreted too optimistically. Reduce it
+        and increase child weight (which averages over more nodes
+        and is thus more conservative). Opposite for underconfidence.
+        """
+        if self._total_predictions < 20:
+            return False  # Minimum data threshold
+
+        ece_before = self.compute_ece()
+
+        if self.is_overconfident:
+            self._evidence_weight = max(0.20, self._evidence_weight - 0.01)
+            self._child_weight = min(0.80, self._child_weight + 0.01)
+            self._total_adjustments += 1
+        elif self.is_underconfident:
+            self._evidence_weight = min(0.80, self._evidence_weight + 0.01)
+            self._child_weight = max(0.20, self._child_weight - 0.01)
+            self._total_adjustments += 1
+        else:
+            return False  # Well-calibrated, no adjustment needed
+
+        self._ece_history.append(ece_before)
+        return True
+
+    # ── Calibrated confidence ───────────────────────────────────
+
+    def calibrate_confidence(self, raw_confidence: float) -> float:
+        """Apply isotonic-like correction to a raw confidence score.
+
+        Maps raw confidence to observed accuracy through bin-based
+        interpolation. When the system says "I'm 85% confident,"
+        the calibrated value reflects what that actually means
+        based on historical outcomes.
+
+        Args:
+            raw_confidence: Uncalibrated confidence [0, 1].
+
+        Returns:
+            Calibrated confidence [0, 1] — an estimate of actual
+            probability of success.
+        """
+        c = max(0.0, min(1.0, raw_confidence))
+
+        # Get populated bins with position and accuracy
+        populated = [
+            (b.avg_confidence, b.accuracy)
+            for b in self._bins
+            if b.is_populated
+        ]
+
+        if len(populated) < 2:
+            return c  # Not enough data — return raw
+
+        populated.sort()
+
+        # Linear interpolation between bins
+        for i in range(len(populated) - 1):
+            conf_a, acc_a = populated[i]
+            conf_b, acc_b = populated[i + 1]
+            if conf_a <= c <= conf_b:
+                span = conf_b - conf_a
+                if span < 1e-10:
+                    return (acc_a + acc_b) / 2.0
+                t = (c - conf_a) / span
+                return acc_a + t * (acc_b - acc_a)
+
+        # Extrapolation at edges
+        if c < populated[0][0]:
+            return populated[0][1]  # Use nearest bin accuracy
+        return populated[-1][1]
+
+    # ── Properties ─────────────────────────────────────────────
+
+    @property
+    def evidence_weight(self) -> float:
+        """Current evidence weight (modulates terminal node confidence)."""
+        return self._evidence_weight
+
+    @property
+    def child_weight(self) -> float:
+        """Current child propagation weight (modulates internal node confidence)."""
+        return self._child_weight
+
+    @property
+    def total_predictions(self) -> int:
+        return self._total_predictions
+
+    @property
+    def total_adjustments(self) -> int:
+        return self._total_adjustments
+
+    @property
+    def ece_trend(self) -> tuple[float, ...]:
+        """Historical ECE values for trend analysis."""
+        return tuple(self._ece_history)
+
+    @property
+    def reliability_diagram(self) -> list[dict[str, Any]]:
+        """Full reliability diagram data for visualization."""
+        return [
+            {
+                "bin_lower": b.lower,
+                "bin_upper": b.upper,
+                "count": b.count,
+                "accuracy": round(b.accuracy, 4) if b.count > 0 else None,
+                "avg_confidence": round(b.avg_confidence, 4),
+                "error": round(b.calibration_error, 4),
+            }
+            for b in self._bins
+        ]
+
+    def summary(self) -> dict[str, Any]:
+        """Human-readable calibration summary."""
+        return {
+            "total_predictions": self._total_predictions,
+            "ece": round(self.compute_ece(), 4),
+            "mce": round(self.compute_mce(), 4),
+            "bias": round(self.compute_bias(), 4),
+            "evidence_weight": round(self._evidence_weight, 4),
+            "child_weight": round(self._child_weight, 4),
+            "total_adjustments": self._total_adjustments,
+            "is_overconfident": self.is_overconfident,
+            "is_underconfident": self.is_underconfident,
+            "bins_populated": sum(1 for b in self._bins if b.count > 0),
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════
 # The Recursive Reasoning Engine
 # ═══════════════════════════════════════════════════════════════════
 
@@ -232,6 +564,7 @@ class RecursiveReasoningEngine:
         decomposer_fn: Any = None,  # Callable[[str, list[EvidencePoint]], list[str]]
         evidence_fn: Any = None,    # Callable[[str, list[str]], list[EvidencePoint]]
         action_composer_fn: Any = None,  # Callable[[str, list[EvidencePoint]], list[dict]]
+        calibrator: ConfidenceCalibrator | None = None,  # External calibrator (shared)
     ):
         """Initialize the reasoning engine.
 
@@ -240,11 +573,15 @@ class RecursiveReasoningEngine:
             decomposer_fn: Optional custom hypothesis decomposition function.
             evidence_fn: Optional custom evidence gathering function.
             action_composer_fn: Optional custom action composition function.
+            calibrator: Optional shared ConfidenceCalibrator for metacognition.
         """
         self._attention = attention_system
         self._decomposer_fn = decomposer_fn
         self._evidence_fn = evidence_fn
         self._action_composer_fn = action_composer_fn
+
+        # Calibrator: create default if none provided
+        self._calibrator = calibrator if calibrator is not None else ConfidenceCalibrator()
 
         # Tension profile cache (set by pillar wrapper each tick)
         self._current_profile: dict[TensionID, float] = dict(self._DEFAULT_PROFILE)
@@ -415,7 +752,53 @@ class RecursiveReasoningEngine:
             "avg_confidence": round(self._stats.avg_plan_confidence, 4),
             "avg_depth": round(self._stats.avg_depth_reached, 2),
             "avg_duration_ms": round(self._stats.avg_duration_ms, 1),
+            "calibration": self._calibrator.summary(),
         }
+
+    @property
+    def calibrator(self) -> ConfidenceCalibrator:
+        """The confidence calibrator for metacognitive feedback."""
+        return self._calibrator
+
+    def calibrate(self, predicted_confidence: float, actual_success: bool) -> dict[str, Any]:
+        """Record an outcome and optionally adjust weights.
+
+        This is the metacognitive learning step — call this after each
+        action execution with the predicted confidence and actual outcome.
+        The calibrator tracks calibration quality and adjusts the
+        evidence/child weights to improve future confidence estimates.
+
+        Args:
+            predicted_confidence: The engine's predicted confidence [0, 1].
+            actual_success: Whether the action actually succeeded.
+
+        Returns:
+            Summary dict with ECE, weights, and whether adjustment occurred.
+        """
+        self._calibrator.record(predicted_confidence, actual_success)
+        adjusted = self._calibrator.adjust_weights()
+        return {
+            "ece": round(self._calibrator.compute_ece(), 4),
+            "evidence_weight": round(self._calibrator.evidence_weight, 4),
+            "child_weight": round(self._calibrator.child_weight, 4),
+            "adjusted": adjusted,
+            "is_overconfident": self._calibrator.is_overconfident,
+            "is_underconfident": self._calibrator.is_underconfident,
+        }
+
+    def calibrated_confidence(self, raw_confidence: float) -> float:
+        """Get the calibrated (outcome-adjusted) confidence.
+
+        Maps the engine's raw confidence to observed accuracy,
+        providing a truer estimate of actual success probability.
+
+        Args:
+            raw_confidence: Uncalibrated confidence from the engine.
+
+        Returns:
+            Calibrated confidence reflecting actual expected accuracy.
+        """
+        return self._calibrator.calibrate_confidence(raw_confidence)
 
     @property
     def current_nodes(self) -> tuple[ReasoningNode, ...]:
@@ -835,11 +1218,17 @@ class RecursiveReasoningEngine:
     def _evaluate_confidence(self, node: ReasoningNode) -> float:
         """Compute aggregate confidence for a reasoning node.
 
-        C(node) = evidence_ratio × 0.7 + mean(children_confidences) × 0.3
+        C(node) = evidence_ratio × w_evidence + mean(children_confidences) × w_child
 
-        Terminal nodes rely more on evidence; internal nodes
+        The weights (w_evidence, w_child) are dynamically adjusted by the
+        ConfidenceCalibrator based on observed outcomes. Default: (0.7, 0.3).
+
+        Terminal nodes rely purely on evidence; internal nodes
         propagate child confidence upward.
         """
+        w_ev = self._calibrator.evidence_weight
+        w_ch = self._calibrator.child_weight
+
         evidence_ratio = node.evidence_ratio
 
         if not node.children:
@@ -855,7 +1244,7 @@ class RecursiveReasoningEngine:
             return evidence_ratio
 
         mean_child_conf = sum(child_confs) / len(child_confs)
-        return evidence_ratio * 0.7 + mean_child_conf * 0.3
+        return evidence_ratio * w_ev + mean_child_conf * w_ch
 
     def _prune_low_confidence_children(self, node: ReasoningNode) -> None:
         """Remove children with confidence significantly below the best.

@@ -14,6 +14,8 @@ from isonome.cognition.attention import (
     RetentionDecision,
 )
 from isonome.cognition.reasoning import (
+    CalibrationBin,
+    ConfidenceCalibrator,
     EvidencePoint,
     NodeStatus,
     ReasoningNode,
@@ -31,6 +33,8 @@ __all__ = [
     "GarbageCollectionReport",
     "RetentionDecision",
     # Reasoning
+    "CalibrationBin",
+    "ConfidenceCalibrator",
     "EvidencePoint",
     "NodeStatus",
     "ReasoningNode",
