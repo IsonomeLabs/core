@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 from isonome.core.state import (
-    SensorState,
+    RawSensorState,
+    CanonicalActionChunk,
+    CorrectedMotorCommand,
+    CortexAdvice,
+    ExecutionResult,
+    Discrepancy,
+    JointLimits,
+    MotorCommandChunk,
     MotorCommand,
+    SafeMotorCommand,
+    # v0.1 legacy
+    SensorState,
+    MotorCommand as LegacyMotorCommand,
     Adjustment,
     WorldModel,
-    CortexAdvice,
     Patch,
     PatchType,
     ErrorEvent,
@@ -17,7 +27,7 @@ from isonome.core.state import (
     PredictedState,
 )
 from isonome.core.config import AppConfig
-from isonome.core.bus import MessageBus, Channel
+from isonome.core.safety import AgentMode
 from isonome.core.agent import Agent
 from isonome.core.app import IsonomeApp
 
@@ -25,11 +35,22 @@ __all__ = [
     "Agent",
     "IsonomeApp",
     "AppConfig",
-    "SensorState",
+    "AgentMode",
+    # v0.2 state models
+    "RawSensorState",
+    "CanonicalActionChunk",
+    "CorrectedMotorCommand",
+    "CortexAdvice",
+    "ExecutionResult",
+    "Discrepancy",
+    "JointLimits",
+    "MotorCommandChunk",
     "MotorCommand",
+    "SafeMotorCommand",
+    # v0.1 legacy
+    "SensorState",
     "Adjustment",
     "WorldModel",
-    "CortexAdvice",
     "Patch",
     "PatchType",
     "ErrorEvent",
@@ -37,6 +58,4 @@ __all__ = [
     "ContactReading",
     "IMUReading",
     "PredictedState",
-    "MessageBus",
-    "Channel",
 ]
