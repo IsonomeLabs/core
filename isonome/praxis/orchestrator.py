@@ -146,6 +146,8 @@ class ExecutionReport:
     tension_profile: dict[TensionID, float]
     confidence_blocks: int = 0  # How many blocked by confidence-based safety gate
     calibration_applied: bool = False  # Whether the calibrator was used
+    calibration_ece: float = 0.0  # ECE at time of execution (for verify modulation)
+    verify_modulation: float = 0.0  # How much verify depth was adjusted by calibration
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -413,9 +415,30 @@ class ActionOrchestrator:
         max_concurrent = max(1, int(4 * (parallel + 1) / 2 + 1))
         max_concurrent = min(max_concurrent, self._max_parallel)
 
-        # ── Phase 3: Schedule by topological levels ─────────────
+        # ── Phase 2.5: Calibration-driven verify depth ─────────
+        # When a calibrator is available, its ECE (Expected Calibration
+        # Error) modulates the verification depth. A poorly-calibrated
+        # system (high ECE) should verify MORE thoroughly; a well-
+        # calibrated system (low ECE) can verify less.
+        #
+        # ω_effective = ω_base + clamp((ECE − τ) × S, −0.15, +0.30)
+        #   τ = 0.05 (target ECE)
+        #   S = 2.0  (sensitivity slope)
         verify = profile.get("verify_execute", 0.0)
-        omega = 0.5 * (1.0 - verify)  # verification depth
+        omega_base = 0.5 * (1.0 - verify)  # base verification depth [0, 1]
+        verify_modulation = 0.0
+        calibration_ece = 0.0
+        if self._confidence_calibrator is not None:
+            calibration_ece = self._confidence_calibrator.compute_ece()
+            # Only modulate when there's meaningful calibration data
+            if self._confidence_calibrator.total_predictions >= 6:
+                target_ece = 0.05
+                sensitivity = 2.0
+                raw_mod = (calibration_ece - target_ece) * sensitivity
+                verify_modulation = max(-0.15, min(0.30, raw_mod))
+        omega = max(0.0, min(1.0, omega_base + verify_modulation))  # verification depth
+
+        # ── Phase 3: Schedule by topological levels ─────────────
 
         completed_this_batch = 0
         failed_this_batch = 0
@@ -530,6 +553,8 @@ class ActionOrchestrator:
             gate_blocks=len(blocked_ids),
             confidence_blocks=confidence_blocks,
             calibration_applied=self._confidence_calibrator is not None,
+            calibration_ece=round(calibration_ece, 4),
+            verify_modulation=round(verify_modulation, 4),
             tension_profile=dict(profile),
         )
 
