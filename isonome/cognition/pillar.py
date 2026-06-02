@@ -255,8 +255,32 @@ class CognitionPillar(BasePillar):
                     task_relevance=0.8,
                     importance_tags=("execution_result",),
                 )
+
+                # ── METACOGNITIVE CALIBRATION ──
+                # Record the predicted confidence vs actual outcome to
+                # calibrate the reasoning engine's confidence estimates.
+                # This is the learning step — the calibrator adjusts
+                # evidence/child weights based on observed accuracy.
+                if self.reasoning is not None:
+                    try:
+                        cal_result = self.reasoning.calibrate(
+                            predicted_confidence=confidence,
+                            actual_success=success,
+                        )
+                        logger.debug(
+                            f"{self.name}: calibration — ECE={cal_result['ece']:.4f}, "
+                            f"w_ev={cal_result['evidence_weight']:.2f}, "
+                            f"w_ch={cal_result['child_weight']:.2f}, "
+                            f"adjusted={cal_result['adjusted']}"
+                        )
+                    except Exception:
+                        logger.exception(f"{self.name}: calibration error")
+
                 # Emit feedback about plan quality
                 signal_val = 0.08 if success else -0.12
+                # Modulate signal strength by calibration quality
+                if self.reasoning is not None and self.reasoning.calibrator.is_overconfident:
+                    signal_val *= 1.3  # Stronger push toward explore when overconfident
                 self.emit_feedback(
                     Feedback(
                         source=self.pillar,
