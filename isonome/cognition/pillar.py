@@ -329,24 +329,55 @@ class CognitionPillar(BasePillar):
     # ── Pillar tick operations ──────────────────────────────────
 
     def update_tension_profile(self, profile: dict[TensionID, float]) -> None:
-        """Update tension profiles on both systems (call each tick)."""
+        """Update tension profiles on both systems (call each tick).
+
+        This is the key metacognitive integration point: calibration metrics
+        from the reasoning engine are pushed to the attention system so that
+        poor calibration triggers wider retention, slower decay, and higher
+        GC thresholds — closing the attention/calibration feedback loop.
+        """
         if self.reasoning is not None:
             self.reasoning.set_tension_profile(profile)
-        # Also update attention's engine if standalone
+
         if self.attention is not None:
+            # ── Push calibration state to attention system ──
+            # When the reasoning engine is poorly calibrated, the attention
+            # system should retain MORE context (wider window, slower decay).
+            if self.reasoning is not None:
+                cal = self.reasoning.calibrator
+                if cal.total_predictions >= 10:
+                    self.attention.set_calibration_state(
+                        ece=cal.compute_ece(),
+                        bias=cal.compute_bias(),
+                        is_overconfident=cal.is_overconfident,
+                        is_underconfident=cal.is_underconfident,
+                        total_predictions=cal.total_predictions,
+                    )
+
+            # ── Calibration-sensitive auto-GC threshold ──
+            # When poorly calibrated, raise the GC trigger threshold so we
+            # don't garbage collect until the budget is genuinely bursting.
+            # Nominal: 0.80, miscalibrated: up to 0.92
+            effective_gc_threshold = self._gc_util_threshold
+            if self.reasoning is not None and self.reasoning.calibrator.total_predictions >= 10:
+                ece = self.reasoning.calibrator.compute_ece()
+                bias = abs(self.reasoning.calibrator.compute_bias())
+                cal_gc_boost = min(0.12, 0.4 * ece * (1.0 + bias))
+                effective_gc_threshold = min(0.92, self._gc_util_threshold + cal_gc_boost)
+
             self.attention.apply_recency_decay(decay_rate=0.03)
             self._ticks_without_gc += 1
 
             # Auto-GC: run if budget utilization exceeds threshold
             if self._auto_gc:
                 util = self.attention.budget.utilization
-                if util >= self._gc_util_threshold:
+                if util >= effective_gc_threshold:
                     self._last_gc_report = self.attention.collect_garbage()
                     self._emit_gc_feedback(self._last_gc_report)
                     self._ticks_without_gc = 0
                     logger.debug(
                         f"{self.name}: auto-GC triggered — "
-                        f"utilization={util:.1%}"
+                        f"utilization={util:.1%} (threshold={effective_gc_threshold:.2f})"
                     )
 
     # ── Convenience methods ────────────────────────────────────────

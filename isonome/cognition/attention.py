@@ -201,6 +201,15 @@ class AttentionEquilibriumSystem:
         self._token_frequencies: dict[str, int] = {}
         self._total_tokens_seen: int = 0
 
+        # Calibration state — pushed from CognitionPillar.update_tension_profile()
+        # When the calibrator detects poor calibration, attention should
+        # retain MORE context (less aggressive GC, slower recency decay).
+        self._calibration_ece: float = 0.0
+        self._calibration_bias: float = 0.0
+        self._calibration_overconfident: bool = False
+        self._calibration_predictions: int = 0
+        self._calibration_active: bool = False  # True once calibration data flows
+
     # ── Public API ───────────────────────────────────────────────
 
     def add_chunk(
@@ -249,6 +258,110 @@ class AttentionEquilibriumSystem:
 
         return chunk
 
+    def set_calibration_state(
+        self,
+        ece: float,
+        bias: float,
+        *,
+        is_overconfident: bool = False,
+        is_underconfident: bool = False,
+        total_predictions: int = 0,
+    ) -> None:
+        """Push calibration metrics from the Cognition pillar.
+
+        Called by CognitionPillar.update_tension_profile() each tick.
+        When calibration quality is poor, the attention system adjusts:
+        - Retention thresholds are lowered (keep MORE context)
+        - GC aggressiveness is reduced
+        - Recency decay is slowed
+
+        The system requires >= 10 predictions before activation
+        (matches the calibrator's minimum-data guard).
+
+        Args:
+            ece: Expected Calibration Error [0, ~0.3+].
+            bias: Weighted confidence-accuracy gap [-1, +1].
+            is_overconfident: True if systematically overconfident.
+            is_underconfident: True if systematically underconfident.
+            total_predictions: Total prediction-outcome pairs recorded.
+        """
+        self._calibration_ece = max(0.0, ece)
+        self._calibration_bias = bias
+        self._calibration_overconfident = is_overconfident
+        self._calibration_predictions = total_predictions
+        self._calibration_active = total_predictions >= 10
+
+    def _compute_calibration_retention_modifier(self) -> float:
+        """Compute a GC threshold adjustment from calibration quality.
+
+        When calibration is poor, the system should retain MORE context
+        (lower thresholds = easier to keep). When well-calibrated,
+        thresholds return to nominal.
+
+        Mathematical foundation:
+            modifier = -(kappa * ECE * (1 + |bias|) * overconfidence_bonus)
+
+            kappa = 1.5 (retention sensitivity)
+            modifier is negative (lowers thresholds) and bounded to [-0.30, 0.0]
+
+        When calibration is good:   modifier =  0.00  (nominal thresholds)
+        When ECE = 0.10, bias 0.05: modifier = -0.17  (mild retention)
+        When ECE = 0.20, bias 0.10: modifier = -0.30  (max retention)
+        When ECE = 0.30, bias 0.15, overconfident: modifier = -0.30 (floor)
+
+        Returns:
+            Threshold adjustment in [-0.30, 0.0]. Negative = keep more.
+        """
+        if not self._calibration_active:
+            return 0.0
+
+        ece = self._calibration_ece
+        bias = abs(self._calibration_bias)
+
+        kappa = 1.5  # Attention retention sensitivity
+
+        # Overconfidence bonus: systematic overconfidence is more dangerous
+        overconfidence_bonus = 1.2 if self._calibration_overconfident else 1.0
+
+        # Compute the retention modifier (negative -> keep more)
+        modifier = -(kappa * ece * (1.0 + bias) * overconfidence_bonus)
+
+        # Bound to [-0.30, 0.0] -- max retention bonus of 0.30 on thresholds
+        return max(-0.30, min(0.0, modifier))
+
+    def _compute_calibration_decay_modifier(self) -> float:
+        """Compute a recency decay rate modifier from calibration quality.
+
+        When calibration is poor, the system should slow recency decay
+        so older context chunks don't fade as quickly -- the agent needs
+        broader temporal context when it's uncertain.
+
+        Mathematical foundation:
+            modifier = kappa * ECE * (1 + |bias|)
+
+            kappa = 0.5 (decay sensitivity)
+            modifier reduces the decay rate multiplicatively
+
+        Well-calibrated:        modifier = 0.00 -> decay_rate * 1.00 (nominal)
+        ECE = 0.10, bias 0.05:  modifier = 0.05 -> decay_rate * 0.95 (slower)
+        ECE = 0.20, bias 0.10:  modifier = 0.11 -> decay_rate * 0.89
+        ECE = 0.30, bias 0.15:  modifier = 0.17 -> decay_rate * 0.83
+        Max:                     modifier = 0.20 -> decay_rate * 0.80
+
+        Returns:
+            Decay reduction factor in [0.0, 0.20]. Higher = slower decay.
+        """
+        if not self._calibration_active:
+            return 0.0
+
+        ece = self._calibration_ece
+        bias = abs(self._calibration_bias)
+
+        kappa = 0.5  # Decay sensitivity factor
+
+        modifier = kappa * ece * (1.0 + bias)
+        return min(0.20, max(0.0, modifier))
+
     def collect_garbage(self) -> GarbageCollectionReport:
         """Run one garbage collection cycle.
 
@@ -272,6 +385,17 @@ class AttentionEquilibriumSystem:
 
         # Modulate thresholds based on tensions
         keep_thresh, prune_thresh = self._modulate_thresholds(profile)
+
+        # ── Calibration-aware retention ──
+        # When poorly calibrated, lower thresholds to retain MORE context.
+        # The calibration modifier is negative (wider retention), tension
+        # modulation is additive, and they compose independently.
+        cal_mod = self._compute_calibration_retention_modifier()
+        keep_thresh += cal_mod
+        prune_thresh += cal_mod * 0.8  # Proportional (prune is more aggressive)
+        # Re-clamp after calibration adjustment
+        keep_thresh = max(0.1, min(0.95, keep_thresh))
+        prune_thresh = max(0.05, min(0.90, prune_thresh))
 
         # Score all chunks
         scored: list[tuple[float, AttentionChunk]] = []
@@ -340,6 +464,9 @@ class AttentionEquilibriumSystem:
             beta=beta,
             gamma=gamma,
             delta=delta,
+            calibration_active=self._calibration_active,
+            calibration_ece=round(self._calibration_ece, 4),
+            calibration_modifier=round(cal_mod, 4),
         )
 
     def apply_recency_decay(self, decay_rate: float = 0.05) -> None:
@@ -351,8 +478,15 @@ class AttentionEquilibriumSystem:
         Args:
             decay_rate: Multiplicative decay factor per tick.
         """
+        # ── Calibration-aware decay ──
+        # When poorly calibrated, slow recency decay so older chunks
+        # persist longer — the agent needs broader temporal context
+        # when it's uncertain.
+        cal_decay_mod = self._compute_calibration_decay_modifier()
+        effective_rate = decay_rate * (1.0 - cal_decay_mod)
+
         for chunk_id, chunk in self._chunks.items():
-            new_recency = chunk.recency * (1.0 - decay_rate)
+            new_recency = chunk.recency * (1.0 - effective_rate)
             # Re-frozen dataclass: replace in dict
             self._chunks[chunk_id] = AttentionChunk(
                 id=chunk.id,
@@ -566,9 +700,12 @@ class GarbageCollectionReport:
     beta: float
     gamma: float
     delta: float
+    calibration_active: bool = False
+    calibration_ece: float = 0.0
+    calibration_modifier: float = 0.0
 
     def summary(self) -> str:
-        return (
+        base = (
             f"GC#{self.gc_cycle}: {self.chunks_before}→{self.chunks_after} chunks "
             f"(kept={self.kept_count}, comp={self.compressed_count}, "
             f"pruned={self.pruned_count}) | "
@@ -576,3 +713,6 @@ class GarbageCollectionReport:
             f"util {self.budget_utilization_before:.1%}→{self.budget_utilization_after:.1%} | "
             f"thresholds k={self.keep_threshold:.2f} p={self.prune_threshold:.2f}"
         )
+        if self.calibration_active and abs(self.calibration_modifier) > 0.001:
+            base += f" | calΔ={self.calibration_modifier:+.3f} (ECE={self.calibration_ece:.3f})"
+        return base
