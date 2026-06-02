@@ -1,113 +1,128 @@
+"""Cortex Layer — discrepancy watcher and advice generator.
+
+Watches the gap between what JEPA intended and what the body actually did,
+then produces natural-language advice for JEPA on the next tick.
+
+Cortex does NOT touch motor commands. It only produces text advice for JEPA.
+"""
 from __future__ import annotations
 
-import asyncio
 import logging
+from typing import List
+
 from isonome.core.layers.base import LayerBase
-from isonome.core.state import WorldModel, CortexAdvice
-from isonome.llm.client import LLMClient
-from isonome.llm.cache import SemanticCache
+from isonome.core.state import (
+    CanonicalActionChunk,
+    CortexAdvice,
+    Discrepancy,
+    ExecutionResult,
+    RawSensorState,
+)
 from isonome.utils.logging import get_layer_logger
 
 
-CORTEX_SYSTEM_PROMPT = """You are the Prefrontal Cortex of a robot. You observe the robot's world model \
-and provide advice to the JEPA (predictive) layer. You NEVER control motors directly.
+class DiscrepancyBuffer:
+    """Ring buffer of observed intent-vs-outcome discrepancies."""
 
-Analyze the world model state and provide:
-1. A brief summary of what you observe
-2. Specific suggestions for the JEPA layer to improve predictions
-3. A priority level (low/medium/high/critical)
+    def __init__(self, max_size: int = 10) -> None:
+        self.buffer: List[Discrepancy] = []
+        self._max_size = max_size
 
-Respond in structured form:
-- summary: one sentence
-- suggestions: list of actionable suggestions
-- priority: low/medium/high/critical
-"""
+    def add(
+        self,
+        intended: CanonicalActionChunk,
+        actual: ExecutionResult,
+        raw_state: RawSensorState,
+    ) -> None:
+        """Store the difference between what JEPA intended and what actually happened."""
+        self.buffer.append(
+            Discrepancy(
+                intended=intended,
+                actual=actual,
+                raw_state=raw_state,
+            )
+        )
+        if len(self.buffer) > self._max_size:
+            self.buffer.pop(0)
+
+    def last(self) -> Discrepancy | None:
+        return self.buffer[-1] if self.buffer else None
+
+    def clear(self) -> None:
+        self.buffer.clear()
 
 
 class CortexLayer(LayerBase):
-    """LLM-driven observer that watches JEPA's world model and advises.
+    """Natural-language advice generator for JEPA.
 
-    Never touches motors directly. Only advises JEPA via natural-language prompts.
-    Triggers at low frequency (~0.1-0.5Hz) or on anomaly detection.
+    Watches the DiscrepancyBuffer and generates CortexAdvice strings.
+    Never touches motor commands.
     """
 
-    def __init__(
-        self,
-        frequency_hz: float = 0.5,
-        provider: str = "openai",
-        model: str = "gpt-4o-mini",
-        api_key_env: str = "OPENAI_API_KEY",
-        sandbox_timeout_s: float = 30.0,
-    ) -> None:
+    def __init__(self, frequency_hz: float = 0.5) -> None:
         super().__init__(name="cortex", frequency_hz=frequency_hz)
-        self._llm: LLMClient | None = None
-        self._provider = provider
-        self._model = model
-        self._api_key_env = api_key_env
-        self._sandbox_timeout_s = sandbox_timeout_s
-        self._cache = SemanticCache()
+        self.buffer = DiscrepancyBuffer()
         self._logger = get_layer_logger("cortex")
 
     async def on_boot(self) -> None:
-        import os
-
-        api_key = os.environ.get(self._api_key_env)
-        if api_key:
-            self._llm = LLMClient(
-                provider=self._provider,
-                model=self._model,
-                api_key=api_key,
-            )
-        self._logger.info(
-            "cortex_layer_booting",
-            extra={"provider": self._provider, "model": self._model},
-        )
+        self._logger.info("cortex_layer_booting")
 
     async def on_tick(self) -> None:
-        pass  # tick logic driven externally via advise()
+        pass  # tick logic driven externally by agent.py
 
     async def on_shutdown(self) -> None:
         self._logger.info("cortex_layer_shutdown")
 
-    async def advise(self, world_model: WorldModel) -> CortexAdvice:
-        """Observe world model and produce advice for JEPA.
+    def advise(self) -> List[CortexAdvice]:
+        """Generate advice for JEPA based on the latest discrepancies."""
+        last = self.buffer.last()
+        if last is None:
+            return []
 
-        Uses LLM client with semantic caching. Falls back to no-op if no LLM
-        configured.
-        """
-        cache_key = f"wm:{hash(world_model.model_dump_json())}"
-        cached = self._cache.get(cache_key)
-        if cached:
-            self._logger.info("cortex_cache_hit")
-            return cached
+        advice_list: List[CortexAdvice] = []
 
-        if not self._llm:
-            return CortexAdvice(summary="No LLM configured", suggestions=[])
+        # Compute simple discrepancy metrics
+        intended_actions = last.intended.actions
+        final_state = last.actual.final_proprioception
 
-        prompt = f"World Model State:\n{world_model.model_dump_json(indent=2)}"
+        if intended_actions.numel() > 0 and final_state.numel() > 0:
+            # Example heuristic: compare first DOF
+            delta = final_state[0].item() - intended_actions[0, 0].item()
+            if abs(delta) > 0.05:
+                advice_list.append(
+                    CortexAdvice(
+                        text=f"Motor 0 overshot by {delta:.2f}m. "
+                        f"Reduce effective gain by {min(abs(delta) * 100, 50):.0f}%.",
+                        priority=2 if abs(delta) > 0.15 else 1,
+                    )
+                )
 
-        try:
-            response = await asyncio.wait_for(
-                self._llm.complete(
-                    prompt=prompt, system=CORTEX_SYSTEM_PROMPT
-                ),
-                timeout=self._sandbox_timeout_s,
+        if not last.actual.success:
+            advice_list.append(
+                CortexAdvice(
+                    text="Last execution failed. Consider a more conservative action.",
+                    priority=3,
+                )
             )
-            advice = CortexAdvice(
-                summary=response[:200],
-                suggestions=[
-                    s.strip()
-                    for s in response.split("\n")
-                    if s.strip().startswith(("-", "*", "•"))
-                ],
-                priority="low",
-            )
-        except asyncio.TimeoutError:
-            self._logger.warning("cortex_timeout")
-            advice = CortexAdvice(summary="LLM call timed out", priority="low")
-        except Exception as e:
-            self._logger.error("cortex_error", extra={"error": str(e)})
-            advice = CortexAdvice(summary=f"LLM error: {e}", priority="low")
 
-        self._cache.put(cache_key, advice)
-        return advice
+        if advice_list:
+            self._logger.info(
+                "cortex_advice_generated",
+                extra={"count": len(advice_list)},
+            )
+        return advice_list
+
+    def build_prompt(
+        self, raw_state: RawSensorState, advice: List[CortexAdvice]
+    ) -> str:
+        """Build a task prompt for JEPA from raw state and advice."""
+        prompt_lines = [
+            "You are a generalist visuomotor policy.",
+            f"Current proprioception shape: {list(raw_state.proprioception.shape)}",
+            f"Timestamp: {raw_state.timestamp:.3f}",
+        ]
+        if raw_state.camera_frames:
+            prompt_lines.append(
+                f"Camera frames: {len(raw_state.camera_frames)} available"
+            )
+        return "\n".join(prompt_lines)
