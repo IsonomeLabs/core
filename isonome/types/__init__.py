@@ -114,6 +114,15 @@ class TensionAxis(BaseModel):
         """How far the current position has drifted from homeostasis."""
         return abs(self.position - self.default_position)
 
+    def __repr__(self) -> str:
+        """Compact debug representation showing the tension position."""
+        return (
+            f"TensionAxis({self.id!r}, "
+            f"pos={self.position:+.3f}, "
+            f"default={self.default_position:+.3f}, "
+            f"damping={self.damping:.2f})"
+        )
+
 
 class TensionSnapshot(BaseModel):
     """A point-in-time capture of all tension axes.
