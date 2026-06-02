@@ -102,6 +102,7 @@ class Action:
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     tags: tuple[str, ...] = field(default_factory=tuple)
     metadata: dict[str, Any] = field(default_factory=dict, repr=False)
+    confidence_required: float = field(default=0.0, repr=False)
     id: UUID = field(default_factory=uuid4)
 
     def dependency_count(self) -> int:
@@ -141,8 +142,10 @@ class ExecutionReport:
     success_rate: float
     avg_validation_score: float
     parallelism_level: int
-    gate_blocks: int  # How many blocked by safety gate
+    gate_blocks: int  # How many blocked by risk-based safety gate
     tension_profile: dict[TensionID, float]
+    confidence_blocks: int = 0  # How many blocked by confidence-based safety gate
+    calibration_applied: bool = False  # Whether the calibrator was used
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -237,6 +240,7 @@ class ActionOrchestrator:
         max_parallel: int = 8,
         default_retry_policy: RetryPolicy | None = None,
         engine: Any = None,  # EquilibriumEngine — optional for standalone use
+        confidence_calibrator: Any = None,  # ConfidenceCalibrator for calibrated safety gating
     ):
         """Initialize the action orchestrator.
 
@@ -253,6 +257,7 @@ class ActionOrchestrator:
         self._max_parallel = max_parallel
         self._default_retry = default_retry_policy or RetryPolicy()
         self._engine = engine
+        self._confidence_calibrator = confidence_calibrator
 
         # Statistics
         self._total_executed: int = 0
@@ -264,6 +269,21 @@ class ActionOrchestrator:
 
         # Execution log for mneme export
         self._execution_log: list[dict[str, Any]] = []
+
+    # ── Calibrator ─────────────────────────────────────────────
+    
+    def set_confidence_calibrator(self, calibrator: Any) -> None:
+        """Set or replace the confidence calibrator for safety gating.
+
+        When a calibrator is set, the orchestrator uses calibrated
+        (observed) confidence rather than raw confidence to gate
+        actions. This closes the metacognitive loop: the Cognition
+        pillar's calibrator learns from execution outcomes, and the
+        Praxis pillar uses those learnings to make smarter safety decisions.
+
+        Set to None to disable confidence-based gating.
+        """
+        self._confidence_calibrator = calibrator
 
     # ── Action Registration ──────────────────────────────────────
 
@@ -352,6 +372,41 @@ class ActionOrchestrator:
                     self._total_blocked += 1
             else:
                 self._states[aid] = ActionState.QUEUED
+
+        # ── Phase 1.5: Confidence-based safety gate ──────────────
+        # When a calibrator is available, this extends the risk gate
+        # with confidence awareness. Actions that require high confidence
+        # are gated by calibrated (observed) confidence, not raw estimates.
+        # This closes the metacognitive loop: Cognition learns calibration,
+        # Praxis uses it to make smarter safety decisions.
+        confidence_blocks = 0
+        if self._confidence_calibrator is not None:
+            # Confidence threshold modulated by autonomy tension:
+            # autonomy=-1 (safe):    θ = 0.9 → very high bar, block uncertain actions
+            # autonomy= 0 (neutral): θ = 0.7 → moderate bar
+            # autonomy=+1 (auto):    θ = 0.5 → low bar, allow even uncertain actions
+            conf_threshold = max(0.3, min(0.95, 0.7 - autonomy * 0.2))
+            for aid, action in self._actions.items():
+                if aid in blocked_ids:
+                    continue  # Already blocked by risk gate
+                if self._states[aid] not in (ActionState.QUEUED, ActionState.PENDING):
+                    continue
+                if action.confidence_required <= 0:
+                    continue  # No confidence requirement — skip
+                try:
+                    calibrated = self._confidence_calibrator.calibrate_confidence(
+                        action.confidence_required
+                    )
+                except Exception:
+                    calibrated = action.confidence_required  # Fallback to raw
+                if calibrated < conf_threshold:
+                    if approve_fn is not None and approve_fn(action):
+                        self._states[aid] = ActionState.QUEUED
+                    else:
+                        self._states[aid] = ActionState.BLOCKED
+                        blocked_ids.add(aid)
+                        self._total_blocked += 1
+                        confidence_blocks += 1
 
         # ── Phase 2: Compute parallelism level ──────────────────
         parallel = profile.get("sequential_parallel", 0.0)
@@ -473,6 +528,8 @@ class ActionOrchestrator:
             avg_validation_score=self._compute_avg_validation(),
             parallelism_level=max_concurrent,
             gate_blocks=len(blocked_ids),
+            confidence_blocks=confidence_blocks,
+            calibration_applied=self._confidence_calibrator is not None,
             tension_profile=dict(profile),
         )
 
@@ -571,7 +628,7 @@ class ActionOrchestrator:
 
         Expected task dict format:
             {description, tool_name, params?, risk?, preconditions?,
-             dependencies?, expected_outcome?, tags?}
+             dependencies?, expected_outcome?, tags?, confidence_required?}
 
         This is the νοῦς → πρᾶξις pipeline entry point. The cognition
         pillar plans work; Praxis executes it.
@@ -603,6 +660,7 @@ class ActionOrchestrator:
                 dependencies=(),  # Resolved below
                 tags=tuple(task.get("tags", ())),
                 metadata=task.get("metadata", {}),
+                confidence_required=float(task.get("confidence_required", 0.0)),
             )
             ref = task.get("ref")
             if ref:
@@ -627,6 +685,7 @@ class ActionOrchestrator:
                     dependencies=resolved,
                     tags=actions[i].tags,
                     metadata=actions[i].metadata,
+                    confidence_required=actions[i].confidence_required,
                 )
 
         return self.register_batch(actions)
@@ -669,6 +728,7 @@ class ActionOrchestrator:
                 "retry_max": action.retry_policy.max_retries,
                 "retry_base_delay": action.retry_policy.base_delay,
                 "retry_backoff": action.retry_policy.backoff_factor,
+                "confidence_required": action.confidence_required,
             }
             for aid, action in self._actions.items()
         }
@@ -723,6 +783,7 @@ class ActionOrchestrator:
                 retry_policy=policy,
                 tags=tuple(adata.get("tags", ())),
                 metadata=adata.get("metadata", {}),
+                confidence_required=float(adata.get("confidence_required", 0.0)),
             )
             orch._actions[aid] = action
 
