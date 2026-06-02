@@ -25,14 +25,15 @@ if __name__ == "__main__":
 ''',
     "config.yaml": '''reflex:
   frequency_hz: 100.0
+  control_freq_hz: 100.0
+  policy_freq_hz: 1.0
 jepa:
-  frequency_hz: 10.0
-  prediction_horizon_s: 1.0
+  frequency_hz: 1.0
+  backend: openvla
 cortex:
   frequency_hz: 0.5
-  provider: openai
-  model: gpt-4o-mini
-  api_key_env: OPENAI_API_KEY
+soma:
+  urdf_path: urdf/robot.urdf
 safety:
   permit_boot_adaptation: false
   error_repeat_threshold: 3
@@ -42,13 +43,10 @@ sim:
 ''',
     "layers/__init__.py": "",
     "layers/reflex.py": '''from isonome.core.layers.reflex import ReflexLayer
-from isonome.core.state import SensorState, MotorCommand
 
 
 class MyReflex(ReflexLayer):
-    async def react(self, sensors: SensorState) -> MotorCommand:
-        positions = {j.name: j.position for j in sensors.joints}
-        return MotorCommand(joint_positions=positions)
+    pass
 ''',
     "layers/jepa.py": '''from isonome.core.layers.jepa import JEPALayer
 
@@ -77,16 +75,17 @@ class MyPlasticity(PlasticityLayer):
     "tests/test_agent.py": '''import pytest
 from isonome.core.config import AppConfig
 from isonome.core.agent import Agent
+from isonome.core.safety import AgentMode
 
 
 @pytest.mark.asyncio
 async def test_agent_boot_shutdown():
     agent = Agent(AppConfig())
     await agent.boot()
-    assert agent.state.value == "idle"
+    assert agent.mode == AgentMode.IDLE
     await agent.shutdown()
-    assert agent.state.value == "offline"
-''',
+    assert agent.mode == AgentMode.IDLE
+'''
 }
 
 
