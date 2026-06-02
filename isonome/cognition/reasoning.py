@@ -1180,36 +1180,103 @@ class RecursiveReasoningEngine:
     # ══════════════════════════════════════════════════════════════
 
     def _compute_max_depth(self) -> int:
-        """Compute max reasoning depth from shallow_deep tension.
+        """Compute max reasoning depth from tensions and calibration quality.
 
-        D = 2 + ⌈6 × (1 + p_shallow)/2⌉
-        p_shallow = -1 → D = 2  (shallow mode)
-        p_shallow = +1 → D = 8  (deep mode)
+        D = 2 + ceil(6 * (1 + p_shallow)/2 * calibration_amplifier)
+
+        Calibration amplifier (metacognition-driven):
+        - Well-calibrated: amplifier = 1.0 -> D in [2, 8] (nominal)
+        - Poorly calibrated: amplifier > 1.0 -> deeper reasoning
+        - Maximum: amplifier = 2.0 at p_shallow = +1 -> D = 14
+        - Bounded: D in [2, 16] in edge case
+
+        p_shallow = -1 -> D = 2  (shallow mode, regardless of calibration)
+        p_shallow = +1 -> D = 8  (deep mode, well-calibrated)
+        p_shallow = +1, amplifier=2.0 -> D = 2 + ceil(6*2) = 14
         """
         p_shallow = self._current_profile.get("shallow_deep", -0.2)
-        # Map [-1,1] → [0,6] via (1 + p) / 2 * 6
-        depth_range = (1.0 + p_shallow) / 2.0 * 6.0
+        amplifier = self._compute_calibration_amplifier()
+        # Map [-1,1] -> [0,6] via (1 + p) / 2 * 6, then amplify
+        depth_range = (1.0 + p_shallow) / 2.0 * 6.0 * amplifier
         return 2 + math.ceil(depth_range)
 
     def _compute_branching_factor(self) -> int:
-        """Compute branching factor from explore_exploit tension.
+        """Compute branching factor from explore_exploit tension and calibration.
 
-        B = max(1, ⌈3 × (1 - p_exploit)⌉)
-        p_exploit = -1 (explore) → B = 6
-        p_exploit = +1 (exploit)  → B = 1
+        B = max(1, ceil(3 * (1 - p_exploit) * calibration_amplifier))
+
+        Calibration amplifier increases branching when miscalibrated:
+        - When poorly calibrated, the system explores more alternatives
+          to gather more outcome data and improve calibration.
+        - Well-calibrated: amplifier = 1.0 -> nominal branching
+        - Maximum: amplifier = 2.0, p_exploit = -1 -> B = 12
+
+        p_exploit = -1 (explore): B = 6 * amplifier
+        p_exploit = +1 (exploit):  B = 1 * amplifier
+        B in [1, 12] in practice
         """
         p_exploit = self._current_profile.get("explore_exploit", 0.15)
-        raw = 3.0 * (1.0 - p_exploit)
+        amplifier = self._compute_calibration_amplifier()
+        raw = 3.0 * (1.0 - p_exploit) * amplifier
         return max(1, math.ceil(raw))
 
     def _is_divergent(self) -> bool:
         """Check if divergent mode is active.
 
-        Divergent when divergent_convergent < 0.
-        Convergent when divergent_convergent >= 0.
+        Divergence is triggered by two conditions:
+        1. divergent_convergent tension < 0 (explicit diverge)
+        2. Calibration ECE > 0.15 — when the system is poorly calibrated,
+           forcing divergent mode explores more alternatives until
+           calibration recovers via the metacognitive feedback loop.
         """
         p_diverge = self._current_profile.get("divergent_convergent", 0.3)
-        return p_diverge < 0.0
+        if p_diverge < 0.0:
+            return True
+        # Metacognitive override: poorly calibrated → diverge to explore
+        if self._calibrator.total_predictions >= 10:
+            if self._calibrator.compute_ece() > 0.15:
+                return True
+        return False
+
+    def _compute_calibration_amplifier(self) -> float:
+        """Compute the metacognitive reasoning-effort amplifier.
+
+        When calibration quality is poor (high ECE, large bias), the
+        reasoning engine invests MORE effort — going deeper, branching
+        wider, considering more alternatives. When calibration is good,
+        the engine can reason efficiently at nominal effort.
+
+        Mathematical foundation:
+            amplifier = 1 + kappa * ECE * (1 + |bias|)
+
+            kappa = 2.0  (calibration sensitivity)
+            Overconfidence bonus = 1.15  (systematic wrongness is worse)
+
+        With no calibration data: amplifier = 1.0 (nominal effort)
+        ECE = 0.0:   amplifier = 1.00  (perfect calibration)
+        ECE = 0.10:  amplifier = 1.20  (mild miscalibration)
+        ECE = 0.20:  amplifier = 1.40  (moderate miscalibration)
+        ECE = 0.30:  amplifier = 1.60  (significant miscalibration)
+
+        With overconfident bias: multiplies further by 1.15.
+        Bounded to [1.0, 2.0].
+
+        Returns:
+            Amplifier factor in [1.0, 2.0].
+        """
+        if self._calibrator.total_predictions < 10:
+            return 1.0  # Not enough data — nominal effort
+
+        ece = self._calibrator.compute_ece()
+        bias = abs(self._calibrator.compute_bias())
+
+        kappa = 2.0  # Calibration sensitivity factor
+
+        # Systematic overconfidence amplifies more than random error
+        overconfidence_bonus = 1.15 if self._calibrator.is_overconfident else 1.0
+
+        amplifier = 1.0 + kappa * ece * (1.0 + bias) * overconfidence_bonus
+        return min(max(amplifier, 1.0), 2.0)
 
     # ══════════════════════════════════════════════════════════════
     # Internal: confidence & pruning
