@@ -1,11 +1,205 @@
+"""Isonome v0.2 state models — Frozen Brain + Learned Nervous System.
+
+All tensor-bearing models use custom validators for torch.Tensor and override
+model_dump() to serialize tensors as nested lists.
+"""
 from __future__ import annotations
 
 import time
+import warnings
 from enum import Enum
-from typing import Any
+from typing import Any, List, Literal
 
-from pydantic import BaseModel, Field
+import torch
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+
+# ---------------------------------------------------------------------------
+# v0.2 State Models
+# ---------------------------------------------------------------------------
+
+class RawSensorState(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    """Uncorrected proprioception and camera frames. Never post-processed.
+
+    This is RAW sensor data. The brain (VLA policy) receives RAW state only.
+    Never feed post-kernel corrected states into the perception pipeline.
+    """
+
+    proprioception: torch.Tensor
+    camera_frames: List[torch.Tensor] = Field(default_factory=list)
+    timestamp: float = Field(default_factory=time.time)
+
+    @field_validator("proprioception", mode="before")
+    @classmethod
+    def _validate_tensor(cls, v: Any) -> torch.Tensor:
+        return torch.as_tensor(v)
+
+    @field_validator("camera_frames", mode="before")
+    @classmethod
+    def _validate_tensor_list(cls, v: Any) -> List[torch.Tensor]:
+        if v is None:
+            return []
+        return [torch.as_tensor(item) for item in v]
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        d = super().model_dump(**kwargs)
+        d["proprioception"] = self.proprioception.tolist()
+        d["camera_frames"] = [f.tolist() for f in self.camera_frames]
+        return d
+
+
+class CanonicalActionChunk(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    """VLA-native action space. Body-agnostic.
+
+    Output of the frozen VLA policy (e.g., π0.7). This is NOT motor commands
+    for the specific robot — it lives in a canonical action space (typically
+    14-DOF end-effector intent).
+    """
+
+    actions: torch.Tensor  # shape: [chunk_size, canonical_dim]
+    is_frozen_policy_output: Literal[True] = True
+
+    @field_validator("actions", mode="before")
+    @classmethod
+    def _validate_tensor(cls, v: Any) -> torch.Tensor:
+        return torch.as_tensor(v)
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        d = super().model_dump(**kwargs)
+        d["actions"] = self.actions.tolist()
+        return d
+
+
+class CorrectedMotorCommand(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    """Robot-specific motor commands after kernel correction."""
+
+    commands: torch.Tensor
+    robot_hash: str = ""
+
+    @field_validator("commands", mode="before")
+    @classmethod
+    def _validate_tensor(cls, v: Any) -> torch.Tensor:
+        return torch.as_tensor(v)
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        d = super().model_dump(**kwargs)
+        d["commands"] = self.commands.tolist()
+        return d
+
+
+class CortexAdvice(BaseModel):
+    """Natural language advice from Cortex to JEPA."""
+
+    text: str
+    priority: int = 1  # Higher = prepend to prompt first
+
+
+class ExecutionResult(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    """What actually happened after motor execution."""
+
+    final_proprioception: torch.Tensor
+    success: bool = True
+    error_metric: float = 0.0
+
+    @field_validator("final_proprioception", mode="before")
+    @classmethod
+    def _validate_tensor(cls, v: Any) -> torch.Tensor:
+        return torch.as_tensor(v)
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        d = super().model_dump(**kwargs)
+        d["final_proprioception"] = self.final_proprioception.tolist()
+        return d
+
+
+class Discrepancy(BaseModel):
+    """A single observed difference between intent and outcome."""
+
+    intended: CanonicalActionChunk
+    actual: ExecutionResult
+    raw_state: RawSensorState
+    timestamp: float = Field(default_factory=time.time)
+
+
+class JointLimits(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    """Per-joint safety limits."""
+
+    lower: torch.Tensor
+    upper: torch.Tensor
+
+    @field_validator("lower", "upper", mode="before")
+    @classmethod
+    def _validate_tensor(cls, v: Any) -> torch.Tensor:
+        return torch.as_tensor(v)
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        d = super().model_dump(**kwargs)
+        d["lower"] = self.lower.tolist()
+        d["upper"] = self.upper.tolist()
+        return d
+
+
+class MotorCommandChunk(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    """A chunk of motor commands at policy frequency."""
+
+    commands: torch.Tensor  # shape: [chunk_size, robot_dof]
+
+    @field_validator("commands", mode="before")
+    @classmethod
+    def _validate_tensor(cls, v: Any) -> torch.Tensor:
+        return torch.as_tensor(v)
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        d = super().model_dump(**kwargs)
+        d["commands"] = self.commands.tolist()
+        return d
+
+
+class MotorCommand(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    """Single-step motor command at control frequency."""
+
+    command: torch.Tensor
+
+    @field_validator("command", mode="before")
+    @classmethod
+    def _validate_tensor(cls, v: Any) -> torch.Tensor:
+        return torch.as_tensor(v)
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        d = super().model_dump(**kwargs)
+        d["command"] = self.command.tolist()
+        return d
+
+
+class SafeMotorCommand(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    """Motor command after safety enforcement."""
+
+    command: torch.Tensor
+    was_clamped: bool = False
+    emergency_stop: bool = False
+
+    @field_validator("command", mode="before")
+    @classmethod
+    def _validate_tensor(cls, v: Any) -> torch.Tensor:
+        return torch.as_tensor(v)
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        d = super().model_dump(**kwargs)
+        d["command"] = self.command.tolist()
+        return d
+
+
+# ---------------------------------------------------------------------------
+# v0.1 Legacy Models (deprecated, kept for backward compatibility)
+# ---------------------------------------------------------------------------
 
 class JointReading(BaseModel):
     name: str
@@ -27,6 +221,8 @@ class IMUReading(BaseModel):
 
 
 class SensorState(BaseModel):
+    """Deprecated v0.1 sensor state. Use RawSensorState."""
+
     timestamp: float = Field(default_factory=time.time)
     joints: list[JointReading] = Field(default_factory=list)
     contacts: list[ContactReading] = Field(default_factory=list)
@@ -34,17 +230,17 @@ class SensorState(BaseModel):
     camera: dict[str, Any] = Field(default_factory=dict)
     extras: dict[str, Any] = Field(default_factory=dict)
 
-
-class MotorCommand(BaseModel):
-    timestamp: float = Field(default_factory=time.time)
-    joint_positions: dict[str, float] = Field(default_factory=dict)
-    joint_velocities: dict[str, float] = Field(default_factory=dict)
-    joint_efforts: dict[str, float] = Field(default_factory=dict)
-    emergency_stop: bool = False
+    def __init__(self, **data: Any):
+        warnings.warn(
+            "SensorState is deprecated in v0.2. Use RawSensorState.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__(**data)
 
 
 class Adjustment(BaseModel):
-    """JEPA modulation of Reflex output — additive corrections."""
+    """Deprecated v0.1 JEPA modulation."""
 
     position_deltas: dict[str, float] = Field(default_factory=dict)
     velocity_deltas: dict[str, float] = Field(default_factory=dict)
@@ -60,22 +256,12 @@ class PredictedState(BaseModel):
 
 
 class WorldModel(BaseModel):
-    """JEPA's internal state snapshot."""
+    """Deprecated v0.1 JEPA world model."""
 
     current_state: PredictedState = Field(default_factory=PredictedState)
     predicted_states: list[PredictedState] = Field(default_factory=list)
     confidence: float = 1.0
     anomaly_score: float = 0.0
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class CortexAdvice(BaseModel):
-    """Natural-language + structured advice from Prefrontal Cortex. Never a MotorCommand."""
-
-    summary: str = ""
-    suggestions: list[str] = Field(default_factory=list)
-    priority: str = "low"  # low, medium, high, critical
-    target_layer: str = "jepa"  # only jepa allowed
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -87,7 +273,7 @@ class PatchType(str, Enum):
 
 
 class Patch(BaseModel):
-    """Code/config/hyperparameter change proposal from Plasticity."""
+    """Deprecated v0.1 patch."""
 
     patch_id: str = ""
     patch_type: PatchType = PatchType.HYPERPARAMETER
@@ -103,5 +289,5 @@ class ErrorEvent(BaseModel):
     error_class: str = ""
     message: str = ""
     layer: str = ""
-    severity: str = "warning"  # warning, error, critical
+    severity: str = "warning"
     context: dict[str, Any] = Field(default_factory=dict)
