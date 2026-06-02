@@ -1,121 +1,110 @@
+"""Plasticity Layer — Runtime-Only Kernel Manager.
+
+The open-source runtime only consumes pre-trained kernels.
+It does NOT implement training loops, loss functions, or cloud API calls.
+"""
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
+from pathlib import Path
+from typing import Optional
+
+import torch
+
 from isonome.core.layers.base import LayerBase
-from isonome.core.state import Patch, ErrorEvent, PatchType
-from isonome.llm.swarm import LLMSwarm
+from isonome.core.layers.soma import SomaKernel
 from isonome.utils.logging import get_layer_logger
 
 
-PLASTICITY_SYSTEM_PROMPT = """You are part of the Neuroplasticity layer of a robot. \
-Analyze error logs and layer states, then propose patches to fix issues.
+@dataclasses.dataclass
+class KernelMetadata:
+    """Metadata for a saved kernel."""
 
-Each patch must be a JSON object with:
-- patch_type: "hyperparameter" | "code" | "behavior_tree" | "config"
-- target_layer: "reflex" | "jepa" | "cortex"
-- description: what the patch does
-- changes: dict of parameter/code changes
-- confidence: 0.0-1.0
+    version: str = "0.2.0"
+    training_episodes: int = 0
+    robot_hash: str = ""
+    timestamp: float = 0.0
 
-Respond with a JSON array of patches.
-"""
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> KernelMetadata:
+        return cls(**d)
 
 
 class PlasticityLayer(LayerBase):
-    """Swarm of LLMs that rewrite kernels, tune hyperparameters, adjust behavior trees.
+    """Runtime-only kernel loader and persister.
 
-    Safety-critical: only runs when SafetyGovernor permits.
-    Default: only when robot is powered off or in guaranteed idle/safe state.
+    - load_kernel(): loads a .pt file into SomaLayer
+    - save_runtime_state(): persists current kernel to disk
+    - has_kernel_for(): checks if a kernel exists for the current robot
     """
 
-    def __init__(
-        self,
-        provider: str = "openai",
-        model: str = "gpt-4o",
-        api_key_env: str = "OPENAI_API_KEY",
-        swarm_size: int = 3,
-    ) -> None:
-        super().__init__(name="plasticity", frequency_hz=0.0)  # not scheduled
-        self._swarm: LLMSwarm | None = None
-        self._provider = provider
-        self._model = model
-        self._api_key_env = api_key_env
-        self._swarm_size = swarm_size
+    def __init__(self, kernel_dir: str = "~/.isonome/kernels") -> None:
+        super().__init__(name="plasticity", frequency_hz=0.0)
+        self._kernel_dir = Path(kernel_dir).expanduser()
+        self._kernel_dir.mkdir(parents=True, exist_ok=True)
         self._logger = get_layer_logger("plasticity")
 
     async def on_boot(self) -> None:
-        import os
-
-        api_key = os.environ.get(self._api_key_env)
-        if api_key:
-            self._swarm = LLMSwarm(
-                provider=self._provider,
-                model=self._model,
-                api_key=api_key,
-                size=self._swarm_size,
-            )
-        self._logger.info("plasticity_layer_booting")
+        self._logger.info(
+            "plasticity_layer_booting",
+            extra={"kernel_dir": str(self._kernel_dir)},
+        )
 
     async def on_tick(self) -> None:
-        pass  # Not scheduled -- triggered by adapt()
+        pass
 
     async def on_shutdown(self) -> None:
         self._logger.info("plasticity_layer_shutdown")
 
-    async def generate_patches(
-        self, error_log: list[ErrorEvent], layer_states: dict
-    ) -> list[Patch]:
-        """Generate patches via LLM swarm.
+    def load_kernel(self, path: Path) -> SomaKernel:
+        """Load a .pt file into a SomaKernel instance."""
+        self._logger.info("plasticity_loading_kernel", extra={"path": str(path)})
+        if not path.exists():
+            raise FileNotFoundError(f"Kernel not found: {path}")
+        data = torch.load(path, map_location="cpu", weights_only=False)
+        canonical_dim = data.get("canonical_dim", 14)
+        robot_state_dim = data.get("robot_state_dim", 14)
+        kernel = SomaKernel(canonical_dim, robot_state_dim)
+        kernel.load_state_dict(data["net"])
+        kernel.eval()
+        for param in kernel.parameters():
+            param.requires_grad = False
+        self._logger.info("plasticity_kernel_loaded")
+        return kernel
 
-        Each LLM in the swarm independently proposes patches.
-        The framework validates and applies them via SafetyGovernor.
-        """
-        if not self._swarm:
-            self._logger.warning("plasticity_no_swarm")
-            return []
+    def save_runtime_state(
+        self,
+        kernel: SomaKernel,
+        metadata: KernelMetadata,
+        path: Path | None = None,
+    ) -> Path:
+        """Save current kernel weights and metadata to disk."""
+        if path is None:
+            path = self._kernel_dir / f"{metadata.robot_hash}.pt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "net": kernel.state_dict(),
+            "canonical_dim": kernel.net[0].in_features - metadata.training_episodes,  # heuristic
+            "robot_state_dim": metadata.training_episodes,
+            "metadata": metadata.to_dict(),
+        }
+        # Re-compute dims correctly from layer shapes
+        canonical_dim = kernel.net[0].in_features - kernel.net[-1].out_features
+        robot_state_dim = kernel.net[-1].out_features
+        payload["canonical_dim"] = canonical_dim
+        payload["robot_state_dim"] = robot_state_dim
+        torch.save(payload, path)
+        self._logger.info("plasticity_kernel_saved", extra={"path": str(path)})
+        return path
 
-        prompt = (
-            f"Error Log ({len(error_log)} events):\n"
-            + "\n".join(
-                f"- [{e.severity}] {e.error_class}: {e.message}"
-                for e in error_log[-20:]
-            )
-            + f"\n\nLayer States:\n{layer_states}"
-        )
+    def has_kernel_for(self, robot_hash: str) -> bool:
+        """Check if a kernel exists on disk for the given robot hash."""
+        return (self._kernel_dir / f"{robot_hash}.pt").exists()
 
-        try:
-            raw_results = await self._swarm.propose(
-                prompt=prompt, system=PLASTICITY_SYSTEM_PROMPT
-            )
-        except Exception as e:
-            self._logger.error(
-                "plasticity_swarm_error", extra={"error": str(e)}
-            )
-            return []
-
-        patches: list[Patch] = []
-        for i, result in enumerate(raw_results):
-            try:
-                parsed = json.loads(result)
-                items = parsed if isinstance(parsed, list) else [parsed]
-                for item in items:
-                    patches.append(
-                        Patch(
-                            patch_id=f"p_{i}_{len(patches)}",
-                            patch_type=PatchType(
-                                item.get("patch_type", "hyperparameter")
-                            ),
-                            target_layer=item.get("target_layer", ""),
-                            description=item.get("description", ""),
-                            changes=item.get("changes", {}),
-                            confidence=float(item.get("confidence", 0.5)),
-                            proposer=f"swarm_{i}",
-                        )
-                    )
-            except (json.JSONDecodeError, ValueError) as e:
-                self._logger.warning(
-                    "plasticity_parse_error",
-                    extra={"error": str(e), "proposer": i},
-                )
-        return patches
+    def kernel_path(self, robot_hash: str) -> Path:
+        return self._kernel_dir / f"{robot_hash}.pt"
