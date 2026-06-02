@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Any, Sequence
 
 from isonome.types import (
     AgentState,
@@ -318,3 +318,105 @@ class EquilibriumEngine:
             self._oscillation_events += 1
             # Don't raise — just increment the counter. The caller
             # can decide whether to escalate.
+
+    # ── Serialization ───────────────────────────────────────────────
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the equilibrium engine state for cross-session persistence.
+
+        Saves all tension axes with current positions, oscillation history,
+        feedback count, and configuration parameters. The agent can be
+        resumed with identical equilibrium state — no learning lost.
+
+        Returns:
+            A JSON-serializable dict of all engine state.
+        """
+        return {
+            "axes": [
+                {
+                    "id": a.id,
+                    "pillar": a.pillar.value,
+                    "pole_left": a.pole_left,
+                    "pole_right": a.pole_right,
+                    "position": a.position,
+                    "default_position": a.default_position,
+                    "damping": a.damping,
+                    "learning_rate": a.learning_rate,
+                }
+                for a in self._axes.values()
+            ],
+            "history": {
+                axis_id: list(hist)
+                for axis_id, hist in self._history.items()
+            },
+            "oscillation_threshold": self._oscillation_threshold,
+            "oscillation_window": self._oscillation_window,
+            "feedback_count": self._feedback_count,
+            "oscillation_events": self._oscillation_events,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EquilibriumEngine:
+        """Deserialize equilibrium engine state.
+
+        Reconstructs all tension axes with saved positions, restores
+        oscillation history, and resets feedback counters from saved
+        values.
+
+        Args:
+            data: A dict produced by to_dict().
+
+        Returns:
+            A reconstructed EquilibriumEngine with full tension state.
+        """
+        from isonome.types import Pillar, TensionAxis
+
+        # Rebuild axes from saved data
+        saved_axes = data.get("axes", [])
+        axes = []
+        for a_data in saved_axes:
+            try:
+                pillar = Pillar(a_data.get("pillar", "cognition"))
+            except ValueError:
+                pillar = Pillar.COGNITION
+            axis = TensionAxis(
+                id=a_data.get("id", "unknown"),
+                pillar=pillar,
+                pole_left=a_data.get("pole_left", "left"),
+                pole_right=a_data.get("pole_right", "right"),
+                position=a_data.get("position", 0.0),
+                default_position=a_data.get("default_position", 0.0),
+                damping=a_data.get("damping", 0.3),
+                learning_rate=a_data.get("learning_rate", 0.1),
+            )
+            axes.append(axis)
+
+        engine = cls(
+            axes=axes,
+            oscillation_threshold=data.get("oscillation_threshold", 0.6),
+            oscillation_window=data.get("oscillation_window", 8),
+        )
+
+        # Restore oscillation history
+        saved_history = data.get("history", {})
+        for axis_id, hist_list in saved_history.items():
+            if axis_id in engine._history:
+                engine._history[axis_id].clear()
+                for val in hist_list:
+                    engine._history[axis_id].append(float(val))
+
+        # Restore counters
+        # Restore positions (__init__ resets to default_position, so we override)
+        saved_axes = data.get("axes", [])
+        for a_data in saved_axes:
+            aid = a_data.get("id", "")
+            saved_pos = float(a_data.get("position", 0.0))
+            if aid in engine._axes:
+                engine._axes[aid] = engine._axes[aid].model_copy(
+                    update={"position": saved_pos}
+                )
+
+        engine._feedback_count = int(data.get("feedback_count", 0))
+        engine._oscillation_events = int(data.get("oscillation_events", 0))
+
+        return engine

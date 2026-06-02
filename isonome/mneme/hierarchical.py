@@ -1288,6 +1288,219 @@ class HierarchicalMneme:
             del self._semantic[weakest]
 
 
+    # ── Serialization ───────────────────────────────────────────
+
+    def _memory_entry_to_minimal(self, entry) -> dict:
+        """Serialize a single MemoryEntry for JSON-safe persistence."""
+        return {
+            "id": str(entry.id),
+            "content": entry.content,
+            "tier": entry.tier.name,
+            "strength": entry.strength,
+            "significance": entry.significance,
+            "created_at": entry.created_at,
+            "last_accessed": entry.last_accessed,
+            "last_rehearsed": entry.last_rehearsed,
+            "rehearsal_count": entry.rehearsal_count,
+            "access_count": entry.access_count,
+            "source": entry.source,
+            "tags": list(entry.tags),
+            "metadata": dict(entry.metadata),
+            "base_half_life": entry.base_half_life,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the full HierarchicalMneme state for cross-session persistence.
+
+        Saves all three memory tiers (WM, Episodic, Semantic) with full
+        metadata, pattern frequencies, tag co-occurrence, calibration
+        state, configuration parameters, and consolidation history.
+        The agent can resume with identical memory state.
+
+        Returns:
+            A JSON-serializable dict of all mneme state.
+        """
+        return {
+            "working": [
+                self._memory_entry_to_minimal(e)
+                for e in self._working.values()
+            ],
+            "episodic": [
+                self._memory_entry_to_minimal(e)
+                for e in self._episodic.values()
+            ],
+            "semantic": [
+                self._memory_entry_to_minimal(e)
+                for e in self._semantic.values()
+            ],
+            "pattern_frequencies": dict(self._pattern_frequencies),
+            "tag_cooccurrence": {
+                "|".join(sorted(pair)): count
+                for pair, count in self._tag_cooccurrence.items()
+            },
+            "consolidation_sig": self._consolidation_sig,
+            "promotion_sig": self._promotion_sig,
+            "pattern_threshold": self._pattern_threshold,
+            "rehearsal_boost": self._rehearsal_boost,
+            "calibration_ece": self._calibration_ece,
+            "calibration_bias": self._calibration_bias,
+            "calibration_overconfident": self._calibration_overconfident,
+            "calibration_underconfident": self._calibration_underconfident,
+            "calibration_total_predictions": self._calibration_total_predictions,
+            "stats": self._stats.summary(),
+            "consolidation_log": [
+                {
+                    "entry_id": str(ce.entry_id),
+                    "from_tier": ce.from_tier.name,
+                    "to_tier": ce.to_tier.name,
+                    "significance": ce.significance,
+                    "strength_at_consolidation": ce.strength_at_consolidation,
+                    "timestamp": ce.timestamp,
+                    "reason": ce.reason,
+                }
+                for ce in self._consolidation_log
+            ],
+            "tension_profile": dict(self._current_profile),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HierarchicalMneme:
+        """Deserialize the full HierarchicalMneme state.
+
+        Reconstructs MemoryEntry objects for all three tiers with full
+        metadata, restores pattern frequencies and tag co-occurrence,
+        and rebuilds stats counters from saved values.
+
+        Args:
+            data: A dict produced by to_dict().
+
+        Returns:
+            A reconstructed HierarchicalMneme with full memory state.
+        """
+        from uuid import UUID
+
+        # Reconstruct from the data
+        mneme = cls(
+            consolidation_significance=data.get("consolidation_sig"),
+            promotion_significance=data.get("promotion_sig"),
+            pattern_count_threshold=data.get("pattern_threshold"),
+            rehearsal_boost=data.get("rehearsal_boost"),
+        )
+
+        # Restore working memory
+        for e_data in data.get("working", []):
+            entry = MemoryEntry(
+                id=UUID(e_data["id"]),
+                content=e_data["content"],
+                tier=MemoryTier[e_data.get("tier", "WORKING")],
+                strength=e_data.get("strength", 1.0),
+                significance=e_data.get("significance", 0.5),
+                created_at=e_data.get("created_at", 0.0),
+                last_accessed=e_data.get("last_accessed", 0.0),
+                last_rehearsed=e_data.get("last_rehearsed", 0.0),
+                rehearsal_count=e_data.get("rehearsal_count", 0),
+                access_count=e_data.get("access_count", 0),
+                source=e_data.get("source"),
+                tags=tuple(e_data.get("tags", [])),
+                metadata=frozendict(e_data.get("metadata", {})),
+                base_half_life=e_data.get("base_half_life", 3600.0),
+            )
+            mneme._working[entry.id] = entry
+
+        # Restore episodic memory
+        for e_data in data.get("episodic", []):
+            entry = MemoryEntry(
+                id=UUID(e_data["id"]),
+                content=e_data["content"],
+                tier=MemoryTier[e_data.get("tier", "EPISODIC")],
+                strength=e_data.get("strength", 1.0),
+                significance=e_data.get("significance", 0.5),
+                created_at=e_data.get("created_at", 0.0),
+                last_accessed=e_data.get("last_accessed", 0.0),
+                last_rehearsed=e_data.get("last_rehearsed", 0.0),
+                rehearsal_count=e_data.get("rehearsal_count", 0),
+                access_count=e_data.get("access_count", 0),
+                source=e_data.get("source"),
+                tags=tuple(e_data.get("tags", [])),
+                metadata=frozendict(e_data.get("metadata", {})),
+                base_half_life=e_data.get("base_half_life", 86400.0),
+            )
+            mneme._episodic[entry.id] = entry
+
+        # Restore semantic memory
+        for e_data in data.get("semantic", []):
+            entry = MemoryEntry(
+                id=UUID(e_data["id"]),
+                content=e_data["content"],
+                tier=MemoryTier[e_data.get("tier", "SEMANTIC")],
+                strength=e_data.get("strength", 1.0),
+                significance=e_data.get("significance", 0.5),
+                created_at=e_data.get("created_at", 0.0),
+                last_accessed=e_data.get("last_accessed", 0.0),
+                last_rehearsed=e_data.get("last_rehearsed", 0.0),
+                rehearsal_count=e_data.get("rehearsal_count", 0),
+                access_count=e_data.get("access_count", 0),
+                source=e_data.get("source"),
+                tags=tuple(e_data.get("tags", [])),
+                metadata=frozendict(e_data.get("metadata", {})),
+                base_half_life=e_data.get("base_half_life", 2592000.0),
+            )
+            mneme._semantic[entry.id] = entry
+
+        # Restore pattern frequencies
+        mneme._pattern_frequencies.clear()
+        for key, count in data.get("pattern_frequencies", {}).items():
+            mneme._pattern_frequencies[key] = int(count)
+
+        # Restore tag co-occurrence
+        mneme._tag_cooccurrence.clear()
+        for pair_str, count in data.get("tag_cooccurrence", {}).items():
+            pair = frozenset(pair_str.split("|"))
+            mneme._tag_cooccurrence[pair] = int(count)
+
+        # Restore calibration state
+        mneme._calibration_ece = float(data.get("calibration_ece", 0.0))
+        mneme._calibration_bias = float(data.get("calibration_bias", 0.0))
+        mneme._calibration_overconfident = bool(data.get("calibration_overconfident", False))
+        mneme._calibration_underconfident = bool(data.get("calibration_underconfident", False))
+        mneme._calibration_total_predictions = int(data.get("calibration_total_predictions", 0))
+
+        # Restore consolidation log
+        mneme._consolidation_log.clear()
+        for ce_data in data.get("consolidation_log", []):
+            event = ConsolidationEvent(
+                entry_id=UUID(ce_data["entry_id"]),
+                from_tier=MemoryTier[ce_data.get("from_tier", "WORKING")],
+                to_tier=MemoryTier[ce_data.get("to_tier", "WORKING")],
+                significance=ce_data.get("significance", 0.0),
+                strength_at_consolidation=ce_data.get("strength_at_consolidation", 0.0),
+                timestamp=ce_data.get("timestamp", 0.0),
+                reason=ce_data.get("reason", ""),
+            )
+            mneme._consolidation_log.append(event)
+
+        # Restore stats (rebuild counts from actual collections)
+        saved_stats = data.get("stats", {})
+        mneme._stats.working_count = len(mneme._working)
+        mneme._stats.episodic_count = len(mneme._episodic)
+        mneme._stats.semantic_count = len(mneme._semantic)
+        mneme._stats.total_consolidations = max(
+            len(mneme._consolidation_log),
+            saved_stats.get("total_consolidations", 0),
+        )
+        mneme._stats.total_pruned = int(saved_stats.get("total_pruned", 0))
+        mneme._stats.total_rehearsals = int(saved_stats.get("total_rehearsals", 0))
+        mneme._stats.total_retrievals = int(saved_stats.get("total_retrievals", 0))
+
+        # Restore tension profile
+        mneme._current_profile.update(data.get("tension_profile", {}))
+
+        return mneme
+
+
+@dataclass
+class ConsolidationReport:
+    """Detailed report of a consolidation cycle."""
 @dataclass
 class ConsolidationReport:
     """Detailed report of a consolidation cycle."""

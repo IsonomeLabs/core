@@ -448,19 +448,24 @@ class CognitionPillar(BasePillar):
 
     def serialize(self) -> dict | None:
         """Get the full serializable cognition state."""
-        if self.attention is None:
-            return None
-        return {
-            "attention": {
+        result: dict[str, Any] = {
+            "context_added": self._context_added,
+            "tasks_reasoned": self._tasks_reasoned,
+            "token_capacity": self._token_capacity,
+            "compress_ratio": self._compress_ratio,
+        }
+        if self.attention is not None:
+            result["attention"] = {
                 "token_capacity": self._token_capacity,
                 "stats": self.attention.stats,
                 "chunk_count": self.attention.chunk_count,
                 "budget_utilization": self.attention.budget.utilization,
-            },
-            "reasoning": self.reasoning.stats if self.reasoning else {},
-            "context_added": self._context_added,
-            "tasks_reasoned": self._tasks_reasoned,
-        }
+            }
+        if self.reasoning is not None:
+            result["reasoning"] = self.reasoning.stats
+            # Include calibrator state
+            result["calibrator"] = self.reasoning.calibrator.to_dict()
+        return result
 
     # ── Properties ──────────────────────────────────────────────────
 

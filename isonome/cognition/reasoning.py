@@ -511,6 +511,93 @@ class ConfidenceCalibrator:
             "bins_populated": sum(1 for b in self._bins if b.count > 0),
         }
 
+    # ── Serialization ────────────────────────────────────────────
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the calibrator state for cross-session persistence.
+
+        Saves the full reliability diagram (bins), prediction window,
+        adaptive weights, drift threshold, ECE history, and counters.
+        From this dict, a new ConfidenceCalibrator can be reconstructed
+        with identical calibration state — no metacognitive learning lost.
+
+        Returns:
+            A JSON-serializable dict of all calibrator state.
+        """
+        return {
+            "num_bins": len(self._bins),
+            "window_size": self._predictions.maxlen,
+            "drift_threshold": self._drift_threshold,
+            "bins": [
+                {
+                    "lower": b.lower,
+                    "upper": b.upper,
+                    "count": b.count,
+                    "correct": b.correct,
+                }
+                for b in self._bins
+            ],
+            "predictions": list(self._predictions),
+            "evidence_weight": self._evidence_weight,
+            "child_weight": self._child_weight,
+            "ece_history": self._ece_history,
+            "total_predictions": self._total_predictions,
+            "total_adjustments": self._total_adjustments,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ConfidenceCalibrator:
+        """Deserialize calibrator state, reconstructing all mutable state.
+
+        Rebuilds bins with saved counts, prediction window from saved
+        tuples, adaptive weights from saved values, and counters from
+        saved totals. This is a faithful reconstruction — the calibrator
+        resumes exactly where it left off.
+
+        Args:
+            data: A dict produced by to_dict().
+
+        Returns:
+            A reconstructed ConfidenceCalibrator with full calibration state.
+        """
+        calibrator = cls(
+            num_bins=data.get("num_bins", 10),
+            window_size=data.get("window_size", 200),
+            drift_threshold=data.get("drift_threshold", 0.05),
+        )
+
+        # Restore bin counters
+        saved_bins = data.get("bins", [])
+        for i, b_data in enumerate(saved_bins):
+            if i < len(calibrator._bins):
+                calibrator._bins[i].count = b_data.get("count", 0)
+                calibrator._bins[i].correct = b_data.get("correct", 0)
+
+        # Restore prediction window
+        calibrator._predictions.clear()
+        for pred_tuple in data.get("predictions", []):
+            if isinstance(pred_tuple, (list, tuple)) and len(pred_tuple) == 2:
+                calibrator._predictions.append(
+                    (float(pred_tuple[0]), bool(pred_tuple[1]))
+                )
+
+        # Restore adaptive weights
+        calibrator._evidence_weight = float(data.get(
+            "evidence_weight", calibrator.DEFAULT_EVIDENCE_WEIGHT
+        ))
+        calibrator._child_weight = float(data.get(
+            "child_weight", calibrator.DEFAULT_CHILD_WEIGHT
+        ))
+
+        # Restore ECE history
+        calibrator._ece_history = list(data.get("ece_history", []))
+
+        # Restore counters (from saved values, not from collections)
+        calibrator._total_predictions = int(data.get("total_predictions", 0))
+        calibrator._total_adjustments = int(data.get("total_adjustments", 0))
+
+        return calibrator
+
 
 # ═══════════════════════════════════════════════════════════════════
 # The Recursive Reasoning Engine
