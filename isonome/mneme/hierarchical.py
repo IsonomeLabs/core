@@ -359,6 +359,13 @@ class HierarchicalMneme:
 
         # Tension profile cache (set by the pillar wrapper)
         self._current_profile: dict[TensionID, float] = {}
+        
+        # Calibration state (set by CognitionPillar each tick)
+        self._calibration_ece: float = 0.0
+        self._calibration_bias: float = 0.0
+        self._calibration_overconfident: bool = False
+        self._calibration_underconfident: bool = False
+        self._calibration_total_predictions: int = 0
 
     # ══════════════════════════════════════════════════════════════
     # Public API — Storage
@@ -625,6 +632,58 @@ class HierarchicalMneme:
             else:
                 forgotten_semantic = len(to_remove)
 
+        # ── Calibration-aware pruning sensitivity ──
+        # When the agent is overconfident, it underestimates how much
+        # memorized content may still be needed. Reduce pruning rate
+        # proportionally to how overconfident the system is.
+        #   λ = 1 - min(overconfident_bonus, 0.30)
+        #   pruned_effective = int(pruned × λ)
+        if self._calibration_total_predictions >= 10 and self._calibration_overconfident and pruned > 0:
+            ece = self._calibration_ece
+            overconfident_prune_discount = min(0.30, ece * 2.0)  # Up to 30% reduction
+            reduced_prune = int(pruned * (1.0 - overconfident_prune_discount))
+            spared = pruned - reduced_prune
+            pruned = reduced_prune
+            # Re-add spared entries to working memory (they get a second chance)
+            # This creates a reserve pool — entries that OVERCONFIDENCE would have
+            # discarded but CALIBRATION saved.
+            if spared > 0 and counter_attr == "forgotten_working":
+                # Re-register spared entries into working memory at reduced strength
+                import math
+                re_added = 0
+                for eid in list(self._working.keys()):
+                    if re_added >= spared:
+                        break
+                    entry = self._working.get(eid)
+                    if entry is not None and entry.strength < self.FORGET_THRESHOLD * 3:
+                        # Give it a small reprieve — boost just above the threshold
+                        self._working[eid] = MemoryEntry(
+                            id=entry.id,
+                            content=entry.content,
+                            tier=entry.tier,
+                            strength=self.FORGET_THRESHOLD * 1.5,
+                            significance=entry.significance,
+                            created_at=entry.created_at,
+                            last_accessed=entry.last_accessed,
+                            last_rehearsed=entry.last_rehearsed,
+                            rehearsal_count=entry.rehearsal_count,
+                            access_count=entry.access_count,
+                            source=entry.source,
+                            tags=entry.tags,
+                            metadata=entry.metadata,
+                            base_half_life=entry.base_half_life,
+                        )
+                        re_added += 1
+                if re_added > 0:
+                    calibration_prune_saved = re_added
+                else:
+                    calibration_prune_saved = 0
+            else:
+                calibration_prune_saved = 0
+        else:
+            overconfident_prune_discount = 0.0
+            calibration_prune_saved = 0
+
         self._stats.total_pruned += pruned
 
         # Phase 5: Enforce capacity limits
@@ -635,6 +694,8 @@ class HierarchicalMneme:
         self._stats.episodic_count = len(self._episodic)
         self._stats.semantic_count = len(self._semantic)
 
+        calibration_active = self._calibration_total_predictions >= 10
+
         return ConsolidationReport(
             working_count=len(self._working),
             episodic_count=len(self._episodic),
@@ -644,6 +705,9 @@ class HierarchicalMneme:
             pruned=pruned,
             thresholds=(cons_sig, prom_sig),
             tension_profile=dict(self._current_profile),
+            calibration_ece=round(self._calibration_ece, 4) if calibration_active else 0.0,
+            calibration_active=calibration_active,
+            calibration_prune_saved=calibration_prune_saved,
         )
 
     def import_from_attention(
@@ -729,6 +793,34 @@ class HierarchicalMneme:
     # ══════════════════════════════════════════════════════════════
     # Public API — Tension Integration
     # ══════════════════════════════════════════════════════════════
+
+    def set_calibration_state(
+        self,
+        ece: float,
+        bias: float,
+        is_overconfident: bool,
+        is_underconfident: bool,
+        total_predictions: int,
+    ) -> None:
+        """Update calibration metrics from the reasoning engine.
+
+        Called by the pillar wrapper each tick. Poor calibration
+        modulates consolidation thresholds: when the agent cannot
+        accurately judge confidence, it should consolidate more
+        cautiously (higher thresholds) and prune less aggressively.
+
+        Args:
+            ece: Expected Calibration Error from ConfidenceCalibrator.
+            bias: Signed bias (positive = overconfident).
+            is_overconfident: Whether the calibrator is overconfident.
+            is_underconfident: Whether the calibrator is underconfident.
+            total_predictions: How many predictions the calibrator has.
+        """
+        self._calibration_ece = ece
+        self._calibration_bias = bias
+        self._calibration_overconfident = is_overconfident
+        self._calibration_underconfident = is_underconfident
+        self._calibration_total_predictions = total_predictions
 
     def set_tension_profile(self, profile: dict[TensionID, float]) -> None:
         """Update the tension profile from the equilibrium engine.
@@ -921,12 +1013,18 @@ class HierarchicalMneme:
         return None
 
     def _modulate_thresholds(self) -> tuple[float, float]:
-        """Modulate consolidation and promotion thresholds from tensions.
+        """Modulate consolidation and promotion thresholds from tensions and calibration.
 
+        Tension modulation:
         - consolidate_prune < 0 (Consolidate):
             Lower thresholds → more consolidation
         - consolidate_prune > 0 (Prune):
             Raise thresholds → less consolidation
+
+        Calibration modulation (additive with tension):
+        - High ECE (poorly calibrated) → raise thresholds (consolidate cautiously)
+        - Low ECE (well calibrated) → slightly lower thresholds (consolidate confidently)
+        - Overconfidence adds a bonus → higher thresholds
         """
         consolidate = self._current_profile.get("consolidate_prune", 0.0)
         specific_gen = self._current_profile.get("specific_general", 0.0)
@@ -944,6 +1042,25 @@ class HierarchicalMneme:
             cons_thresh -= 0.05
             prom_thresh -= 0.05
 
+        # Calibration modulation: additive with tension-based thresholds
+        # Requires ≥10 predictions to activate (avoids startup noise)
+        if self._calibration_total_predictions >= 10:
+            ece = self._calibration_ece
+            bias_mag = abs(self._calibration_bias)
+            
+            # Core ECE modulation: high ECE → raise thresholds
+            #   Δ_cal = ECE × 0.30  (at ECE=0.20: +Δ 0.06)
+            cal_mod = ece * 0.30
+            
+            # Overconfidence bonus: systematic overconfidence needs
+            # extra caution when deciding what's worth remembering
+            if self._calibration_overconfident:
+                cal_mod += ece * 0.20  # +50% more caution
+            
+            # Apply calibration modulation
+            cons_thresh += cal_mod
+            prom_thresh += cal_mod * 0.75  # Promotion slightly less sensitive
+        
         return (
             max(0.15, min(0.95, cons_thresh)),
             max(0.30, min(0.98, prom_thresh)),
@@ -1079,11 +1196,19 @@ class ConsolidationReport:
     pruned: int
     thresholds: tuple[float, float]
     tension_profile: dict[TensionID, float]
+    calibration_ece: float = 0.0
+    calibration_active: bool = False
+    calibration_prune_saved: int = 0
 
     def summary(self) -> str:
-        return (
+        parts = [
             f"Consolidation: WM→Ep={self.wm_to_episodic}, Ep→Sem={self.ep_to_semantic}, "
             f"pruned={self.pruned} | "
             f"tiers: WM={self.working_count}, Ep={self.episodic_count}, Sem={self.semantic_count} | "
             f"thresholds: cons={self.thresholds[0]:.2f}, prom={self.thresholds[1]:.2f}"
-        )
+        ]
+        if self.calibration_active:
+            parts.append(
+                f"cal: ECE={self.calibration_ece:.3f} saved={self.calibration_prune_saved}"
+            )
+        return " ".join(parts)
