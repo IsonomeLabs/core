@@ -1,1 +1,42 @@
-"""νοῦς (Cognition) — reasoning, planning, and context management."""
+"""νοῦς (Cognition) — reasoning, planning, and context management.
+
+Systems:
+    - AttentionEquilibriumSystem: Dynamic context window management
+    - RecursiveReasoningEngine: Multi-step task decomposition into action plans
+    - CognitionPillar: BasePillar wrapper for agent lifecycle integration
+"""
+
+from isonome.cognition.attention import (
+    AttentionBudget,
+    AttentionChunk,
+    AttentionEquilibriumSystem,
+    GarbageCollectionReport,
+    RetentionDecision,
+)
+from isonome.cognition.reasoning import (
+    EvidencePoint,
+    NodeStatus,
+    ReasoningNode,
+    ReasoningPlan,
+    ReasoningStats,
+    RecursiveReasoningEngine,
+)
+from isonome.cognition.pillar import CognitionPillar
+
+__all__ = [
+    # Attention
+    "AttentionBudget",
+    "AttentionChunk",
+    "AttentionEquilibriumSystem",
+    "GarbageCollectionReport",
+    "RetentionDecision",
+    # Reasoning
+    "EvidencePoint",
+    "NodeStatus",
+    "ReasoningNode",
+    "ReasoningPlan",
+    "ReasoningStats",
+    "RecursiveReasoningEngine",
+    # Pillar
+    "CognitionPillar",
+]
