@@ -78,6 +78,7 @@ class CognitionPillar(BasePillar):
         evidence_fn: Any = None,
         auto_gc: bool = True,
         gc_utilization_threshold: float = 0.80,
+        mneme_pillar: Any | None = None,
     ):
         """Initialize the Cognition pillar.
 
@@ -90,6 +91,8 @@ class CognitionPillar(BasePillar):
             evidence_fn: Optional custom evidence gatherer.
             auto_gc: Whether to auto-run GC on high utilization.
             gc_utilization_threshold: Auto-GC trigger threshold [0, 1].
+            mneme_pillar: Optional MnemePillar reference for pushing
+                calibration state on each tick.
         """
         super().__init__(name=name)
         self._engine = engine
@@ -99,6 +102,7 @@ class CognitionPillar(BasePillar):
         self._evidence_fn = evidence_fn
         self._auto_gc = auto_gc
         self._gc_util_threshold = gc_utilization_threshold
+        self._mneme_pillar = mneme_pillar
 
         # Systems — created during _on_initialize
         self.attention: AttentionEquilibriumSystem | None = None
@@ -367,6 +371,21 @@ class CognitionPillar(BasePillar):
 
             self.attention.apply_recency_decay(decay_rate=0.03)
             self._ticks_without_gc += 1
+
+            # ── Push calibration state to Mneme pillar ──
+            # When the reasoning engine is poorly calibrated, the memory
+            # system should consolidate more cautiously and prune less
+            # aggressively — the agent's relevance judgments are suspect.
+            if self._mneme_pillar is not None and self.reasoning is not None:
+                cal = self.reasoning.calibrator
+                if cal.total_predictions >= 10:
+                    self._mneme_pillar.update_calibration(
+                        ece=cal.compute_ece(),
+                        bias=cal.compute_bias(),
+                        is_overconfident=cal.is_overconfident,
+                        is_underconfident=cal.is_underconfident,
+                        total_predictions=cal.total_predictions,
+                    )
 
             # Auto-GC: run if budget utilization exceeds threshold
             if self._auto_gc:
