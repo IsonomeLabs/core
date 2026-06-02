@@ -71,6 +71,7 @@ class PraxisPillar(BasePillar):
         approve_fn: Callable[[Action], bool] | None = None,
         max_parallel: int = 8,
         default_retry_policy: RetryPolicy | None = None,
+        confidence_calibrator: Any = None,  # ConfidenceCalibrator for safety gating
     ):
         """Initialize the Praxis pillar.
 
@@ -88,6 +89,7 @@ class PraxisPillar(BasePillar):
         self._approve_fn = approve_fn
         self._max_parallel = max_parallel
         self._default_retry = default_retry_policy
+        self._confidence_calibrator = confidence_calibrator
         self.orchestrator: ActionOrchestrator | None = None
         self._last_report: ExecutionReport | None = None
 
@@ -102,6 +104,7 @@ class PraxisPillar(BasePillar):
         self.orchestrator = ActionOrchestrator(
             max_parallel=self._max_parallel,
             default_retry_policy=self._default_retry,
+            confidence_calibrator=self._confidence_calibrator,
         )
         # Set initial tension profile from agent state
         if state.tensions is not None:
@@ -306,6 +309,19 @@ class PraxisPillar(BasePillar):
                 reason=f"avg_validation={report.avg_validation_score:.2f}",
             )
         )
+
+    # ── Calibrator wiring ──────────────────────────────────────────────────────
+
+    def set_confidence_calibrator(self, calibrator: Any) -> None:
+        """Set or replace the confidence calibrator for safety gating.
+
+        Passes through to the underlying orchestrator. Set to None
+        to disable confidence-based gating. Call this after wiring
+        the Cognition pillar's calibrator during agent setup.
+        """
+        self._confidence_calibrator = calibrator
+        if self.orchestrator is not None:
+            self.orchestrator.set_confidence_calibrator(calibrator)
 
     # ── Convenience methods ────────────────────────────────────────
 
