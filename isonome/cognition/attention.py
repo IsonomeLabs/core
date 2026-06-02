@@ -58,7 +58,6 @@ class AttentionChunk:
     equilibrium engine to make fine-grained retention decisions.
     """
 
-    id: UUID = field(default_factory=uuid4)
     content: str = field(repr=False)
     token_count: int
     surprisal: float = 0.0  # -log₂ P(content | prior context)
@@ -66,6 +65,7 @@ class AttentionChunk:
     recency: float = 0.0  # Normalized recency [0, 1] where 1 = newest
     task_relevance: float = 0.5  # Estimated relevance to current task [0, 1]
     importance_tags: tuple[str, ...] = field(default_factory=tuple)
+    id: UUID = field(default_factory=uuid4)
 
     def attention_score(
         self,
