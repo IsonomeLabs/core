@@ -191,6 +191,30 @@ class MnemePillar(BasePillar):
             # Run a light consolidation each tick for gradual decay
             self.mneme.consolidate()
 
+    def update_calibration(
+        self,
+        ece: float,
+        bias: float,
+        is_overconfident: bool,
+        is_underconfident: bool,
+        total_predictions: int,
+    ) -> None:
+        """Push calibration metrics from the reasoning engine to Mneme.
+
+        Called by CognitionPillar.update_tension_profile() each tick.
+        When calibration is poor, Mneme consolidates more cautiously
+        and prunes less aggressively — the memory system trusts its
+        own relevance judgments less.
+        """
+        if self.mneme is not None and total_predictions >= 10:
+            self.mneme.set_calibration_state(
+                ece=ece,
+                bias=bias,
+                is_overconfident=is_overconfident,
+                is_underconfident=is_underconfident,
+                total_predictions=total_predictions,
+            )
+
     def serialize(self) -> dict | None:
         """Get the full serializable memory state."""
         if self.mneme is None:
