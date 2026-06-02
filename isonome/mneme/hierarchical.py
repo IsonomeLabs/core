@@ -737,8 +737,18 @@ class HierarchicalMneme:
         # High attention score → potentially worth remembering
         significance = 1.0 / (1.0 + math.exp(-8.0 * (attention_score - 0.35)))
 
-        # Only store if it meets a minimum significance
-        if significance < 0.15:
+        # Determine minimum significance floor — calibration-aware
+        # Well-calibrated: standard 0.15 floor (trust attention scores)
+        # Underconfident: lower floor to 0.08 (compensate for undervaluation)
+        # Overconfident: raise floor to 0.20 (need stronger evidence)
+        min_sig = 0.15
+        if self._calibration_total_predictions >= 10:
+            if self._calibration_underconfident and self._calibration_ece > 0.15:
+                min_sig = 0.08  # More permissive — system undervalues everything
+            elif self._calibration_overconfident and self._calibration_ece > 0.15:
+                min_sig = 0.20  # Stricter — system thinks marginal content is relevant
+
+        if significance < min_sig:
             return None
 
         return self.store(
@@ -781,12 +791,74 @@ class HierarchicalMneme:
     ) -> int:
         """Rehearse all memories matching given tags.
 
+        Calibration-aware rehearsal prioritization:
+        - Well-calibrated (ECE ≤ 0.05): boost high-significance entries
+          (~10% bonus), standard boost for medium-significance, skip
+          low-significance. Trust significance judgments.
+        - Moderate miscalibration (ECE 0.05-0.15): standard equal boost
+          for all matched entries. Neutral — no correction needed.
+        - Overconfident (ECE > 0.15, overconfident flag):
+          distributed rehearsal: spread the total rehearsal budget across
+          MORE entries with a SMALLER per-entry boost. Prevents the
+          overconfident system from over-investing in what it thinks is
+          important, while still refreshing borderline memories.
+        - Underconfident (ECE > 0.15, underconfident flag):
+          uniform boost across all entries, slightly higher than default.
+          Compensates for the system undervaluing its own judgments.
+
         Returns the count of memories rehearsed.
         """
         entries = self.recall_by_tags(tags, max_results=100, match_all=False)
+        if not entries:
+            return 0
+
+        calibration_active = self._calibration_total_predictions >= 10
+
+        if calibration_active and self._calibration_overconfident and self._calibration_ece > 0.15:
+            # Overconfident: distributed rehearsal — more entries, smaller per-entry boost
+            # Total rehearsal budget = len(entries) * base_boost
+            # Distribute: all entries get reduced boost (~50% of normal)
+            base_boost = boost or self._rehearsal_boost
+            reduced_boost = base_boost * 0.5
+            count = 0
+            for entry in entries:
+                if self.rehearse(entry.id, boost=reduced_boost):
+                    count += 1
+            return count
+
+        elif calibration_active and self._calibration_underconfident and self._calibration_ece > 0.15:
+            # Underconfident: uniform boost, slightly elevated
+            # Compensates for undervaluing — give everything a fair rehearsal
+            base_boost = boost or self._rehearsal_boost
+            elevated_boost = base_boost * 1.3
+            count = 0
+            for entry in entries:
+                if self.rehearse(entry.id, boost=elevated_boost):
+                    count += 1
+            return count
+
+        elif calibration_active and self._calibration_ece <= 0.05:
+            # Well-calibrated: significance-ranked prioritization
+            # High-significance entries get a bonus, low-significance get skipped
+            base_boost = boost or self._rehearsal_boost
+            count = 0
+            for entry in entries:
+                if entry.significance >= 0.7:
+                    # High-value: bonus boost
+                    if self.rehearse(entry.id, boost=base_boost * 1.1):
+                        count += 1
+                elif entry.significance >= 0.35:
+                    # Medium: standard boost
+                    if self.rehearse(entry.id, boost=base_boost):
+                        count += 1
+                # Below 0.35: skipped — well-calibrated significance judgments are trustworthy
+            return count
+
+        # Default: standard uniform rehearsal
+        base_boost = boost or self._rehearsal_boost
         count = 0
         for entry in entries:
-            if self.rehearse(entry.id, boost=boost):
+            if self.rehearse(entry.id, boost=base_boost):
                 count += 1
         return count
 
@@ -1114,6 +1186,18 @@ class HierarchicalMneme:
         Uses n-gram frequency overlap: if the entry shares significant
         n-grams with other episodic or semantic entries, it likely
         represents a recurring pattern worth abstracting.
+
+        Calibration-aware support threshold:
+        - Well-calibrated (ECE ≤ 0.05): standard 30% threshold.
+          Trust pattern detection; allow normal abstraction.
+        - Overconfident (ECE > 0.15): RAISE threshold to 40%.
+          Systematically overconfident agents think their pattern
+          matches are stronger than they are. Require MORE evidence
+          before abstracting.
+        - Underconfident (ECE > 0.15): LOWER threshold to 20%.
+          Systematically underconfident agents miss real patterns;
+          lower the bar to compensate.
+        - Moderate miscalibration (ECE 0.05-0.15): 30% standard.
         """
         if not self._pattern_frequencies:
             return False
@@ -1121,6 +1205,11 @@ class HierarchicalMneme:
         tokens = entry.content.lower().split()
         if not tokens:
             return False
+
+        # Determine calibration-adjusted threshold
+        pattern_threshold = self._pattern_threshold  # Default: 3
+
+        calibration_active = self._calibration_total_predictions >= 10
 
         # Check bigram and trigram overlap with known patterns
         pattern_hits = 0
@@ -1130,21 +1219,36 @@ class HierarchicalMneme:
         for i in range(len(tokens) - 1):
             bigram = f"{tokens[i]} {tokens[i+1]}"
             total_grams += 1
-            if self._pattern_frequencies.get(bigram, 0) >= self._pattern_threshold:
+            if self._pattern_frequencies.get(bigram, 0) >= pattern_threshold:
                 pattern_hits += 1
 
         # Trigrams
         for i in range(len(tokens) - 2):
             trigram = f"{tokens[i]} {tokens[i+1]} {tokens[i+2]}"
             total_grams += 1
-            if self._pattern_frequencies.get(trigram, 0) >= self._pattern_threshold:
+            if self._pattern_frequencies.get(trigram, 0) >= pattern_threshold:
                 pattern_hits += 1
 
         if total_grams == 0:
             return False
 
-        # At least 30% of n-grams must be known patterns
-        return (pattern_hits / total_grams) >= 0.30
+        raw_ratio = pattern_hits / total_grams
+
+        # Apply calibration modulation to the required ratio
+        if calibration_active:
+            if self._calibration_overconfident and self._calibration_ece > 0.15:
+                # Overconfident: require MORE pattern evidence
+                required_ratio = 0.40
+            elif self._calibration_underconfident and self._calibration_ece > 0.15:
+                # Underconfident: require LESS pattern evidence (compensate)
+                required_ratio = 0.20
+            else:
+                # Well-calibrated or moderate: standard threshold
+                required_ratio = 0.30
+        else:
+            required_ratio = 0.30
+
+        return raw_ratio >= required_ratio
 
     def _update_patterns(self, content: str, tags: tuple[str, ...]) -> None:
         """Update n-gram frequencies and tag co-occurrence for pattern extraction."""
