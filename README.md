@@ -1,29 +1,41 @@
 # Isonome
 
-> Agentic robotics framework with hierarchical cognitive architecture.
+> Open-source runtime for embodied AI — Frozen Brain + Learned Nervous System.
 
-Isonome is an open-source framework for building embodied AI systems. The core thesis: embodied intelligence isn't a monolithic LLM -- it's four parallel and cascading layers of cognition, from millisecond reflexes to long-term structural adaptation.
+Isonome is an open-source framework for running visuomotor policies (VLAs) on real robots. The core thesis: the VLA policy (π0.7, SmolVLA, OpenVLA, etc.) is a **frozen generalist brain**. The framework provides the **nervous system** that adapts any brain to any body through a learned, local kernel.
 
-## The Four Layers
+## Architecture
 
-| Layer | Frequency | Role | LLM? |
-|-------|-----------|------|------|
-| **Reflex** | ~100Hz | Reactive motor control, collision avoidance, balance | No |
-| **JEPA** | ~10Hz | Predictive world model, modulates Reflex | No |
-| **Cortex** | ~0.5Hz | LLM-driven deliberation, advises JEPA | Yes |
-| **Plasticity** | On-demand | LLM swarm rewrites kernels/tunes hyperparams | Yes |
+### The Four Layers
+
+| Layer | Frequency | Role |
+|-------|-----------|------|
+| **Soma** | ~100Hz | Body interface: RAW perception, kernel correction, actuation |
+| **JEPA** | ~1Hz | Frozen VLA policy loader: deliberates canonical action from RAW state |
+| **Cortex** | ~0.5Hz | Discrepancy watcher: generates natural-language advice for JEPA |
+| **Reflex** | ~100Hz | Interpolates, enforces safety, executes motor commands |
 
 ### Control Flow
 
 ```
-Sensor Input --+--> Reflex --> Motor Output
-               |         ^
-               +--> JEPA -+ (modulates Reflex)
-                     ^
-               Cortex -+ (advises JEPA only, never touches motors)
-
-               Plasticity --> (rewrites all layers, gated by SafetyGovernor)
+Soma.perceive() → RAW SensorState
+                    ↓
+Cortex.advise() → CortexAdvice (text)
+                    ↓
+JEPA.deliberate() → CanonicalActionChunk (frozen policy output)
+                    ↓
+SomaKernel.apply() → CorrectedMotorCommand (body-specific)
+                    ↓
+Reflex.process() → SafeMotorCommand[] (interpolated + clamped)
+                    ↓
+Soma.act() → Robot
 ```
+
+### Critical Invariants
+
+1. **JEPA never sees corrected or post-execution state.** `SomaLayer.perceive()` returns **RAW** proprioception and camera frames. Never feed post-kernel corrected states into JEPA or the system will oscillate.
+2. **The VLA is frozen.** All loaded parameters have `requires_grad=False`. All inference runs under `torch.no_grad()`.
+3. **Cortex never touches motors.** It only produces text advice for JEPA.
 
 ## Install
 
@@ -37,82 +49,94 @@ With simulation support:
 pip install isonome[sim]
 ```
 
-## Quick Start
+With Physical Intelligence backend (π0, π0-fast):
 
 ```bash
-# Scaffold a new robot project
-isonome init my-robot
-cd my-robot
-
-# Run in simulation
-isonome sim
-
-# Run on hardware
-isonome run
+pip install isonome[pi0]
 ```
 
-## Safety Rules
+With generic VLA backends (SmolVLA, OpenVLA):
 
-The framework enforces strict safety rules for the Plasticity layer:
+```bash
+pip install isonome[vla]
+```
 
-1. **Default**: Only runs when the robot is powered off or in guaranteed idle/safe state
-2. **Boot mode**: Can run during boot if user explicitly sets `permit_boot_adaptation: true`
-3. **Live mode**: Only triggered when the same failure occurs N or more times within a time window AND the robot is in SAFE_STATIONARY state
-4. **Emergency stop**: Bypasses all layers and zeros motors immediately
+## Quick Start
 
-All patches are transactional: the framework snapshots layer state, applies the patch, validates in simulation for 100 ticks before committing.
+### Naive Mapping Demo
+
+```bash
+python examples/hello_sim.py
+```
+
+Shows the agent running with naive mapping only — no calibrated kernel. The robot will show systematic drift (intentional).
+
+### Calibrated Kernel Demo
+
+```bash
+python examples/hello_kernel.py
+```
+
+Loads a pre-saved dummy kernel and shows the systematic bias being corrected. Side-by-side before/after in ~10 lines of code.
+
+### Using a Real VLA
+
+```python
+from isonome.core.config import AppConfig
+from isonome.core.agent import Agent
+
+config = AppConfig(
+    agent_name="my_robot",
+    jepa={"backend": "openvla", "model_id": "openvla/openvla-7b"},
+    soma={"urdf_path": "my_robot.urdf"},
+)
+agent = Agent(config)
+await agent.boot()
+await agent.load_kernel()  # loads ~/.isonome/kernels/{robot_hash}.pt
+await agent.run(duration_s=60.0)
+```
+
+## Calibration
+
+The open-source **runtime** consumes calibrated kernels but does **not** produce them. The production calibration pipeline (auto-calibration engine, cloud training, certification logic) lives in a separate closed repository.
+
+To use a calibrated kernel:
+
+1. Train a kernel for your robot via the calibration pipeline (closed source).
+2. Place the `.pt` file at `~/.isonome/kernels/{robot_hash}.pt`.
+3. Call `agent.load_kernel()` at boot time.
+
+Without a kernel, the framework falls back to `NaiveMapper` — a deterministic truncation/padding from canonical 14-DOF to your robot's N-DOF. This is safe but imprecise.
 
 ## Project Structure
 
 ```
 my_robot/
   isonome.toml          # Framework manifest
-  config.yaml           # Layer configs, LLM providers, safety thresholds
+  config.yaml           # Layer configs, VLA backend, safety thresholds
   main.py               # Entrypoint
-  layers/
-    reflex.py           # Your Reflex implementation
-    jepa.py             # Your JEPA world model
-    cortex.py           # Optional: custom deliberation hooks
-    plasticity.py       # Optional: custom adaptation triggers
-  sim/
-    world.json          # Simulation world definition
-  tests/
-    test_agent.py
+  urdf/
+    robot.urdf          # Body description
+  kernels/
+    {robot_hash}.pt     # Calibrated kernel (produced externally)
 ```
 
 ## Configuration
 
-Edit `config.yaml` to configure layer frequencies, LLM providers, and safety thresholds:
+Edit `config.yaml` to configure the VLA backend, layer frequencies, and safety thresholds:
 
 ```yaml
-reflex:
-  frequency_hz: 100.0
-  max_latency_ms: 10.0
-
 jepa:
-  frequency_hz: 10.0
-  prediction_horizon_s: 1.0
+  backend: openvla
+  model_id: openvla/openvla-7b
 
-cortex:
-  frequency_hz: 0.5
-  provider: openai
-  model: gpt-4o-mini
-  api_key_env: OPENAI_API_KEY
+soma:
+  urdf_path: urdf/robot.urdf
 
-safety:
-  permit_boot_adaptation: false
-  error_repeat_threshold: 3
-  error_window_s: 300
-
-sim:
-  engine: pybullet
-  gui: false
+reflex:
+  control_freq_hz: 100.0
+  policy_freq_hz: 1.0
 ```
-
-## Built-in Presets
-
-- **pet**: Reactive companion robot (fast reflexes, minimal deliberation)
-- **patrol**: Autonomous patrol robot (balanced cognition, JEPA-heavy navigation)
 
 ## License
 

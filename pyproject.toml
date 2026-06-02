@@ -4,21 +4,19 @@ build-backend = "hatchling.build"
 
 [project]
 name = "isonome"
-version = "0.1.0"
-description = "Agentic robotics framework with hierarchical cognitive architecture"
+version = "0.2.0"
+description = "Open-source runtime for embodied AI — Frozen Brain + Learned Nervous System"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
-    "openai>=1.0",
-    "anthropic>=0.20",
     "typer>=0.9",
     "rich>=13.0",
-    "pyyaml>=6.0",
-    "aiosqlite>=0.19",
 ]
 
 [project.optional-dependencies]
-sim = ["pybullet>=3.2"]
+pi0 = ["lerobot"]
+vla = ["transformers", "torch"]
+sim = ["pybullet"]
 dev = ["pytest>=7.0", "pytest-asyncio>=0.21", "ruff>=0.1"]
 
 [project.scripts]
