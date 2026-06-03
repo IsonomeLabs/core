@@ -148,9 +148,15 @@ class TaskTypeProfile:
 
     @property
     def convergence_ratio(self) -> float:
-        """How much the last observation moved the norm (0=perfectly stable)."""
+        """How much the last observation moved the norm (0=perfectly stable).
+
+        Returns np.inf when too few observations exist to compute
+        convergence. This preserves the invariant:
+            is_converged == (convergence_ratio < 0.05)
+        for all observation counts, since np.inf is never < 0.05.
+        """
         if len(self._observations) < 3:
-            return 1.0
+            return float(np.inf)
         return self._compute_convergence_ratio()
 
     def _compute_convergence_ratio(self) -> float:
@@ -158,9 +164,12 @@ class TaskTypeProfile:
 
         A low value means the profile is stable — the system is consistently
         converging to the same defaults for this task type.
+
+        Must not be called with fewer than 3 observations — convergence_ratio
+        guards against that and returns np.inf instead.
         """
         if len(self._observations) < 3:
-            return 1.0
+            return float(np.inf)
 
         # Use the average of the first half as the "initial" profile
         # and the average of the second half as the "current" profile
@@ -348,18 +357,18 @@ class TaskTypeHomeostasis:
             if axis is None:
                 continue
 
+            current_default = axis.default_position
+
             # Only adjust if the learned default is meaningfully different
-            if abs(axis.default_position - learned_default) < 0.001:
+            if abs(current_default - learned_default) < 0.001:
                 continue
 
-            engine.adjust_default(axis_id, outcome_signal=learned_default)
-            # adjust_default uses outcome_signal * learning_rate, so we need
-            # to compute a signal that achieves the target default.
-            # Target: new_default = default + signal * lr
-            # Re-express: signal = (target - default) / lr
+            # Compute the signal that moves current_default → learned_default
+            # via adjust_default's formula: new = current + signal × learning_rate
+            # ⇒ signal = (learned_default - current_default) / learning_rate
             learning_rate = axis.learning_rate
             if learning_rate > 0:
-                needed_signal = (learned_default - axis.default_position) / learning_rate
+                needed_signal = (learned_default - current_default) / learning_rate
                 engine.adjust_default(axis_id, outcome_signal=needed_signal)
                 adjusted_count += 1
 

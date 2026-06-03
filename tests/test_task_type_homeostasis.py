@@ -166,6 +166,41 @@ class TestTaskTypeProfile:
         # With 6 observations of drift, it shouldn't be converged
         assert not p.is_converged
 
+    def test_convergence_ratio_invariant(self):
+        """is_converged == (convergence_ratio < 0.05) for ALL observation counts."""
+        # 0 observations: not converged, ratio is inf
+        p = TaskTypeProfile(task_type="inv", axis_order=("a",))
+        assert not p.is_converged
+        assert p.convergence_ratio == float("inf")
+        assert not (p.convergence_ratio < 0.05)
+
+        # 1 observation
+        p.record([0.5])
+        assert not p.is_converged
+        assert p.convergence_ratio == float("inf")
+        assert not (p.convergence_ratio < 0.05)
+
+        # 2 observations
+        p.record([0.5])
+        assert not p.is_converged
+        assert p.convergence_ratio == float("inf")
+        assert not (p.convergence_ratio < 0.05)
+
+        # 3 identical: converged, ratio < 0.05
+        p.record([0.5])
+        assert p.is_converged
+        assert p.convergence_ratio < 0.05
+        assert p.is_converged == (p.convergence_ratio < 0.05)
+
+    def test_convergence_ratio_inf_for_few_observations(self):
+        """convergence_ratio returns inf when < 3 observations."""
+        p = TaskTypeProfile(task_type="sparse", axis_order=("x",))
+        assert p.convergence_ratio == float("inf")
+        p.record([0.1])
+        assert p.convergence_ratio == float("inf")
+        p.record([0.2])
+        assert p.convergence_ratio == float("inf")
+
 
 # ═══════════════════════════════════════════════════════════════════
 # 3. TaskTypeHomeostasis Core (8 tests)
@@ -260,27 +295,48 @@ class TestPreAdaptation:
         assert result == 0  # No change because learned = current
 
     def test_adjusts_when_learned_differs(self, engine, homeostasis):
-        """When learned defaults differ from current, axes adjust."""
+        """When learned defaults differ from current, axes adjust precisely."""
         # Record the current (stock) defaults as the learned norm
         for _ in range(3):
             homeostasis.record_defaults(engine, "analysis")
 
         # Move the current defaults substantially away
+        axis = engine.get_axis("autonomy_safety")
+        stock_default = axis.default_position
         engine.adjust_default("autonomy_safety", outcome_signal=10.0)  # 10 * 0.03 = 0.30 shift
         shifted = engine.get_axis("autonomy_safety").default_position
 
         # Now apply the learned profile (which has the original stock defaults)
         result = homeostasis.apply_task_type_profile(engine, "analysis")
         assert result > 0
-        # The axis should have been moved back toward the original default
+        # The axis should be moved to exactly the learned default
+        # (single adjust_default call with correct signal computation)
+        axis_after = engine.get_axis("autonomy_safety")
+        assert axis_after is not None
+        # With the bug fix, the learned profile stores stock_default ≈ -0.4.
+        # apply_task_type_profile computes:
+        #   signal = (stock_default - shifted) / learning_rate
+        #   new_default = shifted + signal * learning_rate = stock_default (exactly)
+        assert axis_after.default_position == pytest.approx(
+            stock_default, abs=0.02
+        ), f"Expected ~{stock_default:.4f}, got {axis_after.default_position:.4f}"
+
+    def test_exact_single_adjust_per_axis(self, engine, homeostasis):
+        """apply_task_type_profile makes exactly one adjust_default per axis."""
+        for _ in range(3):
+            homeostasis.record_defaults(engine, "analysis")
+
+        # Shift one axis away
+        stock = engine.get_axis("autonomy_safety").default_position
+        engine.adjust_default("autonomy_safety", outcome_signal=5.0)
+
+        # Apply the profile
+        result = homeostasis.apply_task_type_profile(engine, "analysis")
+
+        # The default should land exactly at the learned value
+        # (single adjustment, not cumulative double-adjust)
         axis = engine.get_axis("autonomy_safety")
-        assert axis is not None
-        # The dynamic adjust_default uses signal * learning_rate, so signal=10
-        # shifts by 0.30, moving default from -0.4 to -0.1.
-        # Then apply_task_type_profile tries to restore to -0.4.
-        # The re-adapt signal = (-0.4 - (-0.1)) / 0.03 ≈ -10.0 → shifts to near -0.4
-        # After all adjustments, the default should be near -0.4
-        assert axis.default_position < -0.35  # Should be back near stock -0.4
+        assert axis.default_position == pytest.approx(stock, abs=0.02)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -306,7 +362,7 @@ class TestSoftPreAdaptation:
         # Shift it away, then record
         engine.adjust_default("autonomy_safety", outcome_signal=5.0)
         shifted = engine.get_axis("autonomy_safety").default_position
-        assert abs(shifted - initial) > 0.05  # Confirmed moved
+        assert abs(shifted - initial) > 0.05 # Confirmed moved
 
         # Record 3 times with the shifted defaults
         for _ in range(3):
@@ -325,9 +381,32 @@ class TestSoftPreAdaptation:
         # have moved from 'current' toward 'shifted'
         learned_norm = homeostasis.get_profile("analysis").get_norm()
         learned_val = learned_norm.get("autonomy_safety", 0)
-        assert abs(new_default - current) > 0  # Did move
+        assert abs(new_default - current) > 0 # Did move
         # Verify direction: moved toward learned_val
         assert abs(new_default - learned_val) < abs(current - learned_val)
+
+    def test_soft_exact_one_third_distance(self, engine, homeostasis):
+        """Soft pre-adapt moves exactly 1/3 toward the learned default."""
+        for _ in range(3):
+            homeostasis.record_defaults(engine, "analysis")
+
+        # Get the learned norm
+        learned = homeostasis.get_profile("analysis").get_norm()
+        learned_safety = learned["autonomy_safety"]
+
+        # Shift away
+        engine.adjust_default("autonomy_safety", outcome_signal=8.0)
+        current = engine.get_axis("autonomy_safety").default_position
+
+        # Expected target: 1/3 of the way from current to learned
+        expected = current + (learned_safety - current) / 3.0
+
+        homeostasis.soft_pre_adapt(engine, "analysis")
+
+        actual = engine.get_axis("autonomy_safety").default_position
+        assert actual == pytest.approx(expected, abs=0.02), (
+            f"Expected ~{expected:.4f}, got {actual:.4f}"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════
