@@ -257,6 +257,310 @@ class PillarEquilibriumView:
         )
 
 
+class AdaptiveDampingController:
+    """Automatically adjusts per-axis damping based on oscillation signals.
+
+    Static damping creates a fundamental tension: low damping enables
+    responsiveness but risks oscillation; high damping prevents oscillation
+    but makes the system sluggish. This controller resolves that tension by
+    dynamically adapting each axis's effective damping based on its recent
+    behavior.
+
+    Adaptation rules:
+    - **Oscillation detected**: increase damping (make axis more rigid)
+      to stabilize the feedback loop. Scales with oscillation severity.
+    - **Stability sustained**: gradually decrease damping (make axis more
+      fluid) to restore responsiveness. Only after sustained stability
+      (no oscillation for `stability_window` ticks).
+    - **Bounds**: effective damping is always clamped to
+      [damping_min, damping_max], preventing runaway rigidity or fluidity.
+
+    Mathematical model:
+    - On oscillation: d_eff = min(d_max, d_eff + boost_rate * severity)
+    - On stability: d_eff = max(d_min, d_eff - decay_rate)
+    - Severity = oscillation_stddev / oscillation_threshold (capped at 2.0)
+    - Base damping = axis.damping (the configured static value)
+
+    Integration:
+    - The controller is optional -- engines without it use static damping
+    - When enabled, engine.apply_feedback() calls the controller after each
+      feedback, and uses the controller's effective_damping() instead of
+      the axis's static damping value
+    - The controller's state is serialized alongside the engine for
+      cross-session persistence
+    """
+
+    __slots__ = (
+        "_effective_damping",
+        "_stability_counters",
+        "_oscillation_severity",
+        "_damping_min",
+        "_damping_max",
+        "_boost_rate",
+        "_decay_rate",
+        "_stability_window",
+        "_oscillation_threshold",
+        "_total_adaptations",
+    )
+
+    def __init__(
+        self,
+        *,
+        damping_min: float = 0.1,
+        damping_max: float = 0.95,
+        boost_rate: float = 0.15,
+        decay_rate: float = 0.02,
+        stability_window: int = 6,
+        oscillation_threshold: float = 0.6,
+    ):
+        """Initialize the adaptive damping controller.
+
+        Args:
+            damping_min: Minimum effective damping (prevent too-fluid axes).
+            damping_max: Maximum effective damping (prevent too-rigid axes).
+            boost_rate: How much to increase damping on oscillation.
+            decay_rate: How much to decrease damping on sustained stability.
+            stability_window: Ticks of stability before damping decays.
+            oscillation_threshold: Stddev threshold matching the engine's.
+        """
+        if not (0.0 <= damping_min <= 1.0):
+            raise ValueError(f"damping_min must be in [0, 1], got {damping_min}")
+        if not (0.0 <= damping_max <= 1.0):
+            raise ValueError(f"damping_max must be in [0, 1], got {damping_max}")
+        if damping_min >= damping_max:
+            raise ValueError(
+                f"damping_min ({damping_min}) must be < damping_max ({damping_max})"
+            )
+        if boost_rate <= 0:
+            raise ValueError(f"boost_rate must be > 0, got {boost_rate}")
+        if decay_rate <= 0:
+            raise ValueError(f"decay_rate must be > 0, got {decay_rate}")
+        if stability_window < 1:
+            raise ValueError(f"stability_window must be >= 1, got {stability_window}")
+
+        self._effective_damping: dict[TensionID, float] = {}
+        self._stability_counters: dict[TensionID, int] = {}
+        self._oscillation_severity: dict[TensionID, float] = {}
+        self._damping_min = damping_min
+        self._damping_max = damping_max
+        self._boost_rate = boost_rate
+        self._decay_rate = decay_rate
+        self._stability_window = stability_window
+        self._oscillation_threshold = oscillation_threshold
+        self._total_adaptations: int = 0
+
+    # -- Public API --
+
+    def register_axis(self, axis_id: TensionID, base_damping: float) -> None:
+        """Register an axis with its static base damping.
+
+        The effective damping starts at the base value. Call this
+        for every axis before the first feedback tick.
+
+        Args:
+            axis_id: The tension axis identifier.
+            base_damping: The axis's configured static damping.
+        """
+        self._effective_damping[axis_id] = float(base_damping)
+        self._stability_counters[axis_id] = 0
+        self._oscillation_severity[axis_id] = 0.0
+
+    def unregister_axis(self, axis_id: TensionID) -> None:
+        """Remove an axis from adaptive damping tracking."""
+        self._effective_damping.pop(axis_id, None)
+        self._stability_counters.pop(axis_id, None)
+        self._oscillation_severity.pop(axis_id, None)
+
+    def effective_damping(self, axis_id: TensionID) -> float:
+        """Get the current effective damping for an axis.
+
+        Returns the base (static) damping if the axis is not registered,
+        so unregistered axes fall back gracefully.
+
+        Args:
+            axis_id: The tension axis identifier.
+
+        Returns:
+            The effective damping value in [damping_min, damping_max].
+        """
+        return self._effective_damping.get(axis_id, 0.3)
+
+    def on_feedback(
+        self,
+        axis_id: TensionID,
+        position_history: deque[float],
+        base_damping: float,
+    ) -> float:
+        """Adapt damping for an axis after a feedback tick.
+
+        Called by the engine after each apply_feedback(). Analyzes the
+        axis's recent position history for oscillation and adjusts the
+        effective damping accordingly.
+
+        Args:
+            axis_id: The tension axis identifier.
+            position_history: Recent position values for this axis.
+            base_damping: The axis's static damping (fallback / anchor).
+
+        Returns:
+            The updated effective damping for this axis.
+        """
+        current = self._effective_damping.get(axis_id, base_damping)
+
+        # Auto-register unregistered axis on first contact
+        if axis_id not in self._effective_damping:
+            self._effective_damping[axis_id] = base_damping
+            self._stability_counters[axis_id] = 0
+            self._oscillation_severity[axis_id] = 0.0
+
+        # Compute oscillation severity from recent history
+        severity = self._compute_severity(position_history)
+        self._oscillation_severity[axis_id] = severity
+
+        if severity > 1.0:
+            # Oscillation detected -- boost damping
+            boost = self._boost_rate * min(severity, 2.0)
+            new_damping = min(self._damping_max, current + boost)
+            self._effective_damping[axis_id] = new_damping
+            self._stability_counters[axis_id] = 0
+            self._total_adaptations += 1
+        else:
+            # Stable -- accumulate stability counter
+            counter = self._stability_counters.get(axis_id, 0) + 1
+            self._stability_counters[axis_id] = counter
+
+            if counter >= self._stability_window:
+                # Sustained stability -- decay damping toward base
+                new_damping = max(
+                    self._damping_min,
+                    current - self._decay_rate,
+                )
+                # Anchor: never decay below base_damping while above it
+                if new_damping > base_damping:
+                    new_damping = max(base_damping, new_damping - self._decay_rate)
+                else:
+                    # Already at or below base -- clamp to base (floor)
+                    new_damping = base_damping
+                self._effective_damping[axis_id] = new_damping
+                self._total_adaptations += 1
+
+        return self._effective_damping[axis_id]
+
+    def reset(self) -> None:
+        """Reset all effective damping to base values.
+
+        Call this when the engine resets, to clear learned adaptations.
+        Axes must be re-registered via register_axis() after reset.
+        """
+        self._effective_damping.clear()
+        self._stability_counters.clear()
+        self._oscillation_severity.clear()
+        self._total_adaptations = 0
+
+    # -- Properties --
+
+    @property
+    def total_adaptations(self) -> int:
+        """Total number of damping adjustments made."""
+        return self._total_adaptations
+
+    @property
+    def damping_min(self) -> float:
+        return self._damping_min
+
+    @property
+    def damping_max(self) -> float:
+        return self._damping_max
+
+    @property
+    def boost_rate(self) -> float:
+        return self._boost_rate
+
+    @property
+    def decay_rate(self) -> float:
+        return self._decay_rate
+
+    @property
+    def stability_window(self) -> int:
+        return self._stability_window
+
+    def get_stability_counter(self, axis_id: TensionID) -> int:
+        """How many consecutive stable ticks an axis has had."""
+        return self._stability_counters.get(axis_id, 0)
+
+    def get_oscillation_severity(self, axis_id: TensionID) -> float:
+        """Latest oscillation severity for an axis (0.0 = stable)."""
+        return self._oscillation_severity.get(axis_id, 0.0)
+
+    def all_effective_dampings(self) -> dict[TensionID, float]:
+        """Snapshot of all current effective damping values."""
+        return dict(self._effective_damping)
+
+    # -- Serialization --
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the controller state for cross-session persistence."""
+        return {
+            "effective_damping": dict(self._effective_damping),
+            "stability_counters": dict(self._stability_counters),
+            "oscillation_severity": dict(self._oscillation_severity),
+            "damping_min": self._damping_min,
+            "damping_max": self._damping_max,
+            "boost_rate": self._boost_rate,
+            "decay_rate": self._decay_rate,
+            "stability_window": self._stability_window,
+            "oscillation_threshold": self._oscillation_threshold,
+            "total_adaptations": self._total_adaptations,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AdaptiveDampingController:
+        """Deserialize controller state from a dict produced by to_dict()."""
+        controller = cls(
+            damping_min=data.get("damping_min", 0.1),
+            damping_max=data.get("damping_max", 0.95),
+            boost_rate=data.get("boost_rate", 0.15),
+            decay_rate=data.get("decay_rate", 0.02),
+            stability_window=data.get("stability_window", 6),
+            oscillation_threshold=data.get("oscillation_threshold", 0.6),
+        )
+        controller._effective_damping = data.get("effective_damping", {})
+        controller._stability_counters = {
+            k: int(v) for k, v in data.get("stability_counters", {}).items()
+        }
+        controller._oscillation_severity = data.get("oscillation_severity", {})
+        controller._total_adaptations = int(data.get("total_adaptations", 0))
+        return controller
+
+    # -- Internal --
+
+    def _compute_severity(self, history: deque[float]) -> float:
+        """Compute oscillation severity from position history.
+
+        Returns:
+            Severity ratio = stddev / oscillation_threshold.
+            Values > 1.0 indicate oscillation. 0.0 = no variance.
+        """
+        if len(history) < 4:
+            return 0.0
+        n = len(history)
+        mean = sum(history) / n
+        variance = sum((x - mean) ** 2 for x in history) / n
+        stddev = math.sqrt(variance)
+        if self._oscillation_threshold <= 0:
+            return 0.0
+        return stddev / self._oscillation_threshold
+
+    def __repr__(self) -> str:
+        n_axes = len(self._effective_damping)
+        return (
+            f"AdaptiveDampingController("
+            f"axes={n_axes}, "
+            f"adaptations={self._total_adaptations}, "
+            f"range=[{self._damping_min:.2f}, {self._damping_max:.2f}])"
+        )
+
+
 class EquilibriumEngine:
     """Manages the dynamic balance of all tension axes for an agent.
 
@@ -269,6 +573,8 @@ class EquilibriumEngine:
     - Default positions (set points) adapt slowly via outcome signals
     - Oscillation detection prevents runaway feedback loops
     - All operations produce immutable snapshots for audit trails
+    - Optional adaptive damping controller adjusts damping dynamically
+      based on oscillation signals (see AdaptiveDampingController)
     """
 
     # Default tension axes that every agent starts with
@@ -356,6 +662,8 @@ class EquilibriumEngine:
         *,
         oscillation_threshold: float = 0.6,
         oscillation_window: int = 8,
+        adaptive_damping: AdaptiveDampingController | None = None,
+        enable_adaptive_damping: bool = False,
     ):
         """Initialize the equilibrium engine.
 
@@ -363,6 +671,13 @@ class EquilibriumEngine:
             axes: Custom tension axes. Defaults to DEFAULT_AXES if None.
             oscillation_threshold: Max stddev before oscillation is declared.
             oscillation_window: Number of recent positions to track per axis.
+            adaptive_damping: An existing AdaptiveDampingController to bind.
+                If None and enable_adaptive_damping is True, a default
+                controller is created automatically.
+            enable_adaptive_damping: If True and adaptive_damping is None,
+                create a default AdaptiveDampingController with the engine's
+                oscillation_threshold. If False (default), the engine uses
+                static per-axis damping from TensionAxis.damping.
         """
         axes = tuple(axes) if axes is not None else self.DEFAULT_AXES
         # Initialize each axis with its position set to its default_position,
@@ -379,6 +694,21 @@ class EquilibriumEngine:
         self._feedback_count: int = 0
         self._oscillation_events: int = 0
 
+        # -- Adaptive damping integration --
+        if adaptive_damping is not None:
+            self._adaptive_damping = adaptive_damping
+        elif enable_adaptive_damping:
+            self._adaptive_damping = AdaptiveDampingController(
+                oscillation_threshold=oscillation_threshold,
+            )
+        else:
+            self._adaptive_damping = None
+
+        # Register all axes with the adaptive damping controller
+        if self._adaptive_damping is not None:
+            for axis in self._axes.values():
+                self._adaptive_damping.register_axis(axis.id, axis.damping)
+
     # ── Public API ───────────────────────────────────────────────
 
     @property
@@ -393,6 +723,11 @@ class EquilibriumEngine:
     @property
     def total_oscillation_events(self) -> int:
         return self._oscillation_events
+
+    @property
+    def adaptive_damping(self) -> AdaptiveDampingController | None:
+        """The adaptive damping controller, or None if not enabled."""
+        return self._adaptive_damping
 
     def snapshot(self, agent_id=None, trigger=None) -> TensionSnapshot:
         """Capture the current tension state."""
@@ -430,6 +765,13 @@ class EquilibriumEngine:
         # moves the needle less
         effective_delta = feedback.signal * feedback.confidence
 
+        # Apply adaptive damping if controller is enabled
+        if self._adaptive_damping is not None:
+            adaptive_d = self._adaptive_damping.effective_damping(
+                feedback.tension_axis_id
+            )
+            axis = axis.model_copy(update={"damping": adaptive_d})
+
         # Apply the adjustment (damping is internal to TensionAxis.adjust)
         new_axis = axis.adjust(effective_delta)
 
@@ -441,6 +783,14 @@ class EquilibriumEngine:
         self._axes[feedback.tension_axis_id] = new_axis
         self._feedback_count += 1
 
+        # Notify adaptive damping controller after feedback
+        if self._adaptive_damping is not None:
+            self._adaptive_damping.on_feedback(
+                feedback.tension_axis_id,
+                self._history[feedback.tension_axis_id],
+                self._axes[feedback.tension_axis_id].damping,
+            )
+
         return new_axis
 
     def apply_feedback_batch(self, feedbacks: Sequence[Feedback]) -> TensionSnapshot:
@@ -448,6 +798,10 @@ class EquilibriumEngine:
 
         All adjustments are computed before any axis is updated,
         preventing ordering artifacts.
+
+        When adaptive damping is enabled, each axis uses its
+        current effective damping rather than its static value.
+        The controller is notified after all updates are applied.
         """
         # Phase 1: compute all new positions
         updates: dict[TensionID, TensionAxis] = {}
@@ -456,6 +810,12 @@ class EquilibriumEngine:
             if axis is None:
                 continue
             effective_delta = fb.signal * fb.confidence
+            # Apply adaptive damping if available
+            if self._adaptive_damping is not None:
+                adaptive_d = self._adaptive_damping.effective_damping(
+                    fb.tension_axis_id
+                )
+                axis = axis.model_copy(update={"damping": adaptive_d})
             updates[fb.tension_axis_id] = axis.adjust(effective_delta)
 
         # Phase 2: apply all updates
@@ -464,6 +824,15 @@ class EquilibriumEngine:
             self._history[axis_id].append(new_axis.position)
             self._feedback_count += 1
             self._check_oscillation(axis_id)
+
+        # Phase 3: notify adaptive damping controller for each updated axis
+        if self._adaptive_damping is not None:
+            for axis_id in updates:
+                self._adaptive_damping.on_feedback(
+                    axis_id,
+                    self._history[axis_id],
+                    self._axes[axis_id].damping,
+                )
 
         return self.snapshot()
 
@@ -501,6 +870,11 @@ class EquilibriumEngine:
             target = axis.default_position if keep_defaults else 0.0
             self._axes[axis_id] = axis.model_copy(update={"position": target})
             self._history[axis_id].clear()
+        # Reset adaptive damping if present
+        if self._adaptive_damping is not None:
+            self._adaptive_damping.reset()
+            for axis in self._axes.values():
+                self._adaptive_damping.register_axis(axis.id, axis.damping)
 
     def tension_distance(self) -> float:
         """Aggregate drift from homeostasis — how 'stressed' the agent is.
@@ -517,6 +891,11 @@ class EquilibriumEngine:
     def get_axis(self, axis_id: TensionID) -> TensionAxis | None:
         """Look up a single axis by ID."""
         return self._axes.get(axis_id)
+
+    @property
+    def adaptive_damping(self) -> AdaptiveDampingController | None:
+        """The adaptive damping controller, or None if not enabled."""
+        return self._adaptive_damping
 
     def view_for(self, pillar: Pillar) -> PillarEquilibriumView:
         """Create a structured read-only view for a specific pillar.
@@ -601,7 +980,10 @@ class EquilibriumEngine:
             "oscillation_window": self._oscillation_window,
             "feedback_count": self._feedback_count,
             "oscillation_events": self._oscillation_events,
-        }
+            "adaptive_damping_state": (
+                self._adaptive_damping.to_dict() if self._adaptive_damping is not None else None
+            ),
+            }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EquilibriumEngine:
@@ -644,6 +1026,16 @@ class EquilibriumEngine:
             oscillation_threshold=data.get("oscillation_threshold", 0.6),
             oscillation_window=data.get("oscillation_window", 8),
         )
+
+        # Restore adaptive damping controller if present
+        ad_state = data.get("adaptive_damping_state")
+        if ad_state is not None:
+            controller = AdaptiveDampingController.from_dict(ad_state)
+            engine._adaptive_damping = controller
+            # Re-register axes with the restored controller
+            for axis in engine._axes.values():
+                if axis.id not in controller._effective_damping:
+                    controller.register_axis(axis.id, axis.damping)
 
         # Restore oscillation history
         saved_history = data.get("history", {})
