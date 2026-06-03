@@ -660,8 +660,8 @@ class TestActionOrchestratorSerialization:
         assert action.id in pillar2.orchestrator._completed
 
 
-# ═══════════════════════════════════════════════════════════════════
-# IsonomeAgent Serialization Tests (Integration)
+    # ═══════════════════════════════════════════════════════════════════
+        # IsonomeAgent Serialization Tests (Integration)
 # ═══════════════════════════════════════════════════════════════════
 
 
