@@ -208,6 +208,31 @@ class PraxisPillar(BasePillar):
             except Exception:
                 logger.exception(f"{self.name}: error serializing state")
 
+    # ── Equilibrium pull integration ──────────────────────────────
+
+    def _on_equilibrium_sync(self, view) -> None:
+        """Auto-sync tension state from the equilibrium view.
+
+        When bound to an engine, this is called automatically at the
+        start of each process_queued() tick. It replaces the need
+        for external update_tension_profile() calls.
+
+        Applies the view's all_positions to the orchestrator and
+        reads cross-pillar influence (e.g., Cognition's shallow_deep
+        position affects execution planning depth).
+        """
+        if self.orchestrator is not None:
+            self.orchestrator.set_tension_profile(view.all_positions)
+
+        # Cross-pillar modulation: if Cognition is in shallow mode,
+        # prefer sequential execution for simpler coordination
+        shallow_deep = view.cross_axes.get("shallow_deep", 0.0)
+        if shallow_deep < -0.5 and self.orchestrator is not None:
+            # Shallow cognition → limit parallelism
+            self.orchestrator._max_parallel = max(
+                1, self._max_parallel // 2
+            )
+
     # ── Execution ─────────────────────────────────────────────────
 
     def _run_execution_batch(self) -> None:

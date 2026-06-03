@@ -33,6 +33,230 @@ from isonome.types import (
 )
 
 
+class PillarEquilibriumView:
+    """Structured read-only view of equilibrium state for a single pillar.
+
+    Provides a pillar with direct, organized access to its own tension axes,
+    drift metrics, and cross-pillar influence — without needing external
+    set_tension_profile() calls.
+
+    This is the pull-side complement to the push-side Feedback mechanism:
+    pillars push Feedback to the engine (changing state), and pull
+    PillarEquilibriumView from the engine (reading state to modulate behavior).
+
+    Architecture:
+
+     ┌──────────────────┐
+     │  EquilibriumEngine │
+     │                    │
+     │  view_for(pillar) │──→ PillarEquilibriumView
+     │                    │     own_axes: {id: pos, ...}
+     │                    │     other_axes: {id: pos, ...}
+     │                    │     stress_level: float
+     │                    │     drift: {id: float, ...}
+     │                    │     oscillating: [id, ...]
+     └──────────────────┘
+
+    Mathematical foundation:
+
+    Each pillar owns a subset of the 8 tension axes. The view decomposes:
+
+    - **Own axes**: those belonging to this pillar — directly modulate behavior
+    - **Cross-pillar influence**: axes from other pillars — indirectly affect
+      decision-making (e.g., Cognition reads Praxis autonomy_safety to adjust
+      plan risk tolerance)
+    - **Stress level**: `σ = √(1/N × Σᵢ (pᵢ - dᵢ)²)` — RMS drift from
+      homeostasis across ALL axes. High σ means the agent is in an unfamiliar
+      or challenging situation.
+    - **Axis drift**: per-axis `|pᵢ - dᵢ|` — how far each axis has moved
+      from its learned set point.
+    - **Oscillation warning**: axes with high recent variance — the system
+      is receiving contradictory feedback and should exercise caution.
+
+    Integration pattern:
+    - BasePillar.bind_engine() stores a reference to the engine
+    - BasePillar.process_queued() calls engine.view_for(self.pillar) at the
+      start of each tick, storing the view as self._equilibrium_view
+    - Pillar implementations read self._equilibrium_view instead of requiring
+      external update_tension_profile() calls
+    """
+
+    __slots__ = (
+        "_pillar",
+        "_own_axes",
+        "_cross_axes",
+        "_all_positions",
+        "_all_defaults",
+        "_stress_level",
+        "_drift",
+        "_oscillating",
+        "_oscillation_threshold",
+    )
+
+    def __init__(
+        self,
+        pillar: Pillar,
+        axes: dict[TensionID, TensionAxis],
+        history: dict[TensionID, deque],
+        oscillation_threshold: float,
+    ):
+        # Split axes into own and cross-pillar
+        self._pillar = pillar
+        self._own_axes: dict[TensionID, float] = {}
+        self._cross_axes: dict[TensionID, float] = {}
+        self._all_positions: dict[TensionID, float] = {}
+        self._all_defaults: dict[TensionID, float] = {}
+        self._drift: dict[TensionID, float] = {}
+        self._oscillating: list[TensionID] = []
+        self._oscillation_threshold = oscillation_threshold
+
+        for axis_id, axis in axes.items():
+            pos = axis.position
+            default = axis.default_position
+            self._all_positions[axis_id] = pos
+            self._all_defaults[axis_id] = default
+            self._drift[axis_id] = abs(pos - default)
+
+            if axis.pillar == pillar:
+                self._own_axes[axis_id] = pos
+            else:
+                self._cross_axes[axis_id] = pos
+
+            # Check oscillation
+            hist = history.get(axis_id)
+            if hist is not None and len(hist) >= 4:
+                n = len(hist)
+                mean = sum(hist) / n
+                variance = sum((x - mean) ** 2 for x in hist) / n
+                stddev = math.sqrt(variance)
+                if stddev > oscillation_threshold:
+                    self._oscillating.append(axis_id)
+
+        # Compute stress level (RMS drift from homeostasis)
+        if self._drift:
+            squared = sum(d ** 2 for d in self._drift.values())
+            self._stress_level = math.sqrt(squared / len(self._drift))
+        else:
+            self._stress_level = 0.0
+
+    # ── Properties ──────────────────────────────────────────────
+
+    @property
+    def pillar(self) -> Pillar:
+        """Which pillar this view belongs to."""
+        return self._pillar
+
+    @property
+    def own_axes(self) -> dict[TensionID, float]:
+        """Positions of axes owned by this pillar: {axis_id: position}.
+
+        These are the tensions the pillar directly controls and should
+        use to modulate its own behavior.
+        """
+        return dict(self._own_axes)
+
+    @property
+    def cross_axes(self) -> dict[TensionID, float]:
+        """Positions of axes from other pillars: {axis_id: position}.
+
+        These indirectly affect the pillar's decision-making. For example,
+        Cognition reads Praxis's autonomy_safety to adjust plan risk tolerance.
+        """
+        return dict(self._cross_axes)
+
+    @property
+    def all_positions(self) -> dict[TensionID, float]:
+        """All axis positions regardless of pillar: {axis_id: position}."""
+        return dict(self._all_positions)
+
+    @property
+    def all_defaults(self) -> dict[TensionID, float]:
+        """All axis default positions: {axis_id: default_position}."""
+        return dict(self._all_defaults)
+
+    @property
+    def stress_level(self) -> float:
+        """RMS drift from homeostasis across all axes.
+
+        σ = √(1/N × Σᵢ |pᵢ - dᵢ|²)
+
+        Range: [0.0, ~1.0]. High values indicate the agent is far from
+        its learned equilibrium — it may be in an unfamiliar situation
+        or receiving contradictory feedback.
+        """
+        return self._stress_level
+
+    @property
+    def drift(self) -> dict[TensionID, float]:
+        """Per-axis drift from homeostasis: {axis_id: |position - default|}."""
+        return dict(self._drift)
+
+    @property
+    def oscillating(self) -> tuple[TensionID, ...]:
+        """Axes currently oscillating beyond the threshold.
+
+        An axis is oscillating if its recent position history has
+        standard deviation > oscillation_threshold. This means
+        the system is receiving contradictory feedback on this axis
+        and should exercise caution in modulating behavior based on it.
+        """
+        return tuple(self._oscillating)
+
+    @property
+    def is_stressed(self) -> bool:
+        """Whether the stress level exceeds the moderate threshold (0.3)."""
+        return self._stress_level > 0.3
+
+    @property
+    def is_highly_stressed(self) -> bool:
+        """Whether the stress level exceeds the critical threshold (0.5)."""
+        return self._stress_level > 0.5
+
+    # ── Convenience methods ───────────────────────────────────────
+
+    def get(self, axis_id: TensionID, default: float = 0.0) -> float:
+        """Get a specific axis position by ID, with default fallback."""
+        return self._all_positions.get(axis_id, default)
+
+    def get_drift(self, axis_id: TensionID) -> float:
+        """Get drift for a specific axis, 0.0 if unknown."""
+        return self._drift.get(axis_id, 0.0)
+
+    def own_axis_ids(self) -> tuple[TensionID, ...]:
+        """IDs of axes owned by this pillar."""
+        return tuple(self._own_axes.keys())
+
+    def cross_axis_ids(self) -> tuple[TensionID, ...]:
+        """IDs of axes owned by other pillars."""
+        return tuple(self._cross_axes.keys())
+
+    def is_axis_oscillating(self, axis_id: TensionID) -> bool:
+        """Check if a specific axis is oscillating."""
+        return axis_id in self._oscillating
+
+    def summary(self) -> dict[str, Any]:
+        """Return a summary dict for reporting/logging."""
+        return {
+            "pillar": self._pillar.value,
+            "own_axes": self._own_axes,
+            "cross_axes": self._cross_axes,
+            "stress_level": round(self._stress_level, 4),
+            "is_stressed": self.is_stressed,
+            "is_highly_stressed": self.is_highly_stressed,
+            "oscillating": list(self._oscillating),
+            "max_drift_axis": max(self._drift, key=self._drift.get) if self._drift else None,
+            "max_drift_value": round(max(self._drift.values()), 4) if self._drift else 0.0,
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"PillarEquilibriumView(pillar={self._pillar.value}, "
+            f"own={len(self._own_axes)}, cross={len(self._cross_axes)}, "
+            f"stress={self._stress_level:.3f}, "
+            f"oscillating={len(self._oscillating)})"
+        )
+
+
 class EquilibriumEngine:
     """Manages the dynamic balance of all tension axes for an agent.
 
@@ -293,6 +517,30 @@ class EquilibriumEngine:
     def get_axis(self, axis_id: TensionID) -> TensionAxis | None:
         """Look up a single axis by ID."""
         return self._axes.get(axis_id)
+
+    def view_for(self, pillar: Pillar) -> PillarEquilibriumView:
+        """Create a structured read-only view for a specific pillar.
+
+        This is the pull-side complement to push-side Feedback. Each pillar
+        calls this at the start of its tick to get a current snapshot of:
+        - Its own tension axes (directly modulate behavior)
+        - Cross-pillar axes (indirect influence)
+        - Aggregate stress level (how far from homeostasis)
+        - Per-axis drift from set points
+        - Oscillation warnings
+
+        Args:
+            pillar: Which pillar is requesting the view.
+
+        Returns:
+            A PillarEquilibriumView scoped to the requesting pillar.
+        """
+        return PillarEquilibriumView(
+            pillar=pillar,
+            axes=self._axes,
+            history=self._history,
+            oscillation_threshold=self._oscillation_threshold,
+        )
 
     # ── Internal ─────────────────────────────────────────────────
 

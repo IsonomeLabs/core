@@ -149,6 +149,43 @@ class MnemePillar(BasePillar):
             except Exception:
                 logger.exception(f"{self.name}: error serializing state")
 
+    # ── Equilibrium pull integration ──────────────────────────────
+
+    def _on_equilibrium_sync(self, view) -> None:
+        """Auto-sync tension state from the equilibrium view.
+
+        When bound to an engine, this is called automatically at the
+        start of each process_queued() tick. It replaces the need
+        for external update_tension_profile() calls.
+
+        Applies the view's all_positions to the mneme system and
+        runs a light consolidation cycle. Also reads cross-pillar
+        influence: when Praxis is failing, reduce memory pruning
+        to preserve potentially-useful context.
+        """
+        if self.mneme is not None:
+            self.mneme.set_tension_profile(view.all_positions)
+            # Run a light consolidation each tick for gradual decay
+            self.mneme.consolidate()
+
+        # Cross-pillar modulation: if Praxis is in safe mode
+        # (low autonomy_safety), reduce pruning aggressiveness
+        # to preserve context that might help understand failures
+        autonomy_safety = view.cross_axes.get("autonomy_safety", 0.0)
+        if autonomy_safety < -0.5 and self.mneme is not None:
+            # Reduce pruning: lower the consolidation significance
+            # threshold so more memories survive
+            try:
+                self.mneme.set_calibration_state(
+                    ece=0.3,  # Moderate miscalibration signal
+                    bias=0.0,
+                    is_overconfident=False,
+                    is_underconfident=False,
+                    total_predictions=20,  # Enough to activate
+                )
+            except Exception:
+                logger.debug(f"{self.name}: could not apply cross-pillar modulation")
+
     # ── Feedback ──────────────────────────────────────────────────
 
     def _emit_memory_pressure_feedback(self, report) -> None:
