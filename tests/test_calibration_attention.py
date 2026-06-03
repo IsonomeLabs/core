@@ -657,12 +657,374 @@ class TestCalibrationAttentionEdgeCases:
         assert aes._compute_calibration_retention_modifier() == 0.0
 
     def test_no_chunks_gc_with_calibration(self, aes_factory=None):
-        """GC with calibration but no chunks: should not crash."""
-        aes = AttentionEquilibriumSystem(EquilibriumEngine(), token_capacity=10_000)
+    	"""GC with calibration but no chunks: should not crash."""
+    	aes = AttentionEquilibriumSystem(EquilibriumEngine(), token_capacity=10_000)
+    	aes.set_calibration_state(
+    		ece=0.20, bias=0.10, is_overconfident=True, total_predictions=30
+    	)
+    	report = aes.collect_garbage()
+    	assert report.chunks_before == 0
+    	assert report.chunks_after == 0
+    	assert report.calibration_active is True
+
+# ═══════════════════════════════════════════════════════════════════
+# Calibration Weight Rebalance (iter-016)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestCalibrationWeightRebalance:
+    """_compute_calibration_weight_rebalance() shifts α↔β based on calibration."""
+
+    @pytest.fixture
+    def aes(self):
+        return AttentionEquilibriumSystem(EquilibriumEngine(), token_capacity=10_000)
+
+    # ── Inactive / below threshold ──
+
+    def test_inactive_returns_zero(self, aes):
+        """When calibration is inactive, no weight shift."""
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d == 0.0
+        assert beta_d == 0.0
+
+    def test_zero_ece_returns_zero(self, aes):
+        """Active calibration but zero ECE: no shift."""
+        aes.set_calibration_state(ece=0.0, bias=0.0, total_predictions=10)
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d == 0.0
+        assert beta_d == 0.0
+
+    def test_ece_below_015_returns_zero(self, aes):
+        """ECE < 0.15: not enough miscalibration to warrant rebalance."""
+        aes.set_calibration_state(ece=0.10, bias=0.05, total_predictions=20)
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d == 0.0
+        assert beta_d == 0.0
+
+    def test_ece_exactly_015_returns_zero(self, aes):
+        """ECE exactly at 0.15 boundary: still no rebalance (strict <)."""
+        aes.set_calibration_state(ece=0.15, bias=0.05, total_predictions=20)
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d == 0.0
+        assert beta_d == 0.0
+
+    # ── Overconfident: shift β → α ──
+
+    def test_overconfident_shifts_beta_to_alpha(self, aes):
+        """Overconfident: α increases (positive delta), β decreases (negative)."""
         aes.set_calibration_state(
             ece=0.20, bias=0.10, is_overconfident=True, total_predictions=30
         )
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d > 0.0  # Surprisal weight increases
+        assert beta_d < 0.0   # MI weight decreases
+        assert alpha_d == pytest.approx(-beta_d)  # Zero-sum
+
+    def test_overconfident_exact_calculation(self, aes):
+        """Overconfident: Δ = η × ECE × (1+|bias|) × 1.2."""
+        aes.set_calibration_state(
+            ece=0.20, bias=0.10, is_overconfident=True, total_predictions=30
+        )
+        # Δ = 0.50 × 0.20 × (1 + 0.10) × 1.2 = 0.50 × 0.20 × 1.10 × 1.2
+        #   = 0.50 × 0.264 = 0.132 → capped at 0.12
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d == pytest.approx(0.12)  # Capped at max_shift
+        assert beta_d == pytest.approx(-0.12)
+
+    def test_overconfident_below_cap(self, aes):
+        """Overconfident with lower ECE: shift below the 0.12 cap."""
+        aes.set_calibration_state(
+            ece=0.16, bias=0.05, is_overconfident=True, total_predictions=25
+        )
+        # Δ = 0.50 × 0.16 × (1 + 0.05) × 1.2 = 0.50 × 0.16 × 1.05 × 1.2
+        #   = 0.50 × 0.2016 = 0.1008
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d == pytest.approx(0.1008)
+        assert beta_d == pytest.approx(-0.1008)
+
+    def test_overconfident_zero_bias(self, aes):
+        """Overconfident with zero bias: no bias amplification."""
+        aes.set_calibration_state(
+            ece=0.20, bias=0.0, is_overconfident=True, total_predictions=30
+        )
+        # Δ = 0.50 × 0.20 × (1 + 0.0) × 1.2 = 0.50 × 0.24 = 0.12
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d == pytest.approx(0.12)
+        assert beta_d == pytest.approx(-0.12)
+
+    def test_overconfident_negative_bias_uses_abs(self, aes):
+        """Overconfident with negative bias: |bias| used in formula."""
+        aes.set_calibration_state(
+            ece=0.20, bias=-0.10, is_overconfident=True, total_predictions=30
+        )
+        # |bias| = 0.10, same as positive 0.10
+        # Δ = 0.50 × 0.20 × (1 + 0.10) × 1.2 = 0.132 → capped 0.12
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d == pytest.approx(0.12)
+        assert beta_d == pytest.approx(-0.12)
+
+    def test_overconfident_extreme_ece_capped(self, aes):
+        """Extreme ECE: shift is still capped at 0.12."""
+        aes.set_calibration_state(
+            ece=0.50, bias=0.50, is_overconfident=True, total_predictions=100
+        )
+        # Raw would be 0.50 × 0.50 × 1.50 × 1.2 = 0.45, capped at 0.12
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d == 0.12
+        assert beta_d == -0.12
+
+    # ── Underconfident: shift α → β ──
+
+    def test_underconfident_shifts_alpha_to_beta(self, aes):
+        """Underconfident: α decreases (negative), β increases (positive)."""
+        aes.set_calibration_state(
+            ece=0.20, bias=0.10, is_underconfident=True, total_predictions=30
+        )
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d < 0.0   # Surprisal weight decreases
+        assert beta_d > 0.0    # MI weight increases
+        assert alpha_d == pytest.approx(-beta_d)  # Zero-sum
+
+    def test_underconfident_exact_calculation(self, aes):
+        """Underconfident: Δ = η × ECE × (1+|bias|), no 1.2 bonus."""
+        aes.set_calibration_state(
+            ece=0.20, bias=0.10, is_underconfident=True, total_predictions=30
+        )
+        # Δ = 0.50 × 0.20 × (1 + 0.10) = 0.50 × 0.22 = 0.11
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d == pytest.approx(-0.11)
+        assert beta_d == pytest.approx(0.11)
+
+    def test_underconfident_no_overconfidence_bonus(self, aes):
+        """Underconfident shift is smaller than overconfident (no 1.2x)."""
+        aes_oc = AttentionEquilibriumSystem(EquilibriumEngine(), token_capacity=10_000)
+        aes_uc = AttentionEquilibriumSystem(EquilibriumEngine(), token_capacity=10_000)
+
+        aes_oc.set_calibration_state(
+            ece=0.20, bias=0.10, is_overconfident=True, total_predictions=30
+        )
+        aes_uc.set_calibration_state(
+            ece=0.20, bias=0.10, is_underconfident=True, total_predictions=30
+        )
+
+        oc_alpha, _ = aes_oc._compute_calibration_weight_rebalance()
+        uc_alpha, _ = aes_uc._compute_calibration_weight_rebalance()
+
+        # Overconfident shift should be larger (1.2x bonus)
+        assert abs(oc_alpha) > abs(uc_alpha)
+
+    def test_underconfident_extreme_ece_capped(self, aes):
+        """Extreme underconfident ECE: shift capped at 0.12."""
+        aes.set_calibration_state(
+            ece=0.50, bias=0.50, is_underconfident=True, total_predictions=100
+        )
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d == -0.12
+        assert beta_d == 0.12
+
+    # ── Moderate: neither over nor under ──
+
+    def test_moderate_miscalibration_no_shift(self, aes):
+        """ECE > 0.15 but neither over/underconfident: no shift."""
+        aes.set_calibration_state(
+            ece=0.20, bias=0.10, total_predictions=30
+        )
+        alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+        assert alpha_d == 0.0
+        assert beta_d == 0.0
+
+    # ── Zero-sum invariant ──
+
+    def test_zero_sum_invariant_all_cases(self, aes):
+        """α_delta + β_delta = 0 for all calibration states."""
+        for ece, bias, oc, uc in [
+            (0.20, 0.10, True, False),
+            (0.20, 0.10, False, True),
+            (0.30, 0.20, True, False),
+            (0.16, 0.05, False, True),
+            (0.50, 0.50, True, False),
+        ]:
+            aes.set_calibration_state(
+                ece=ece, bias=bias,
+                is_overconfident=oc, is_underconfident=uc,
+                total_predictions=30,
+            )
+            alpha_d, beta_d = aes._compute_calibration_weight_rebalance()
+            assert alpha_d + beta_d == pytest.approx(0.0), \
+                f"Zero-sum violated: ece={ece}, bias={bias}, oc={oc}"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GC Report: Weight Rebalance Fields (iter-016)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestGCReportWeightRebalance:
+    """GarbageCollectionReport includes calibration weight rebalance data."""
+
+    @pytest.fixture
+    def aes(self):
+        return AttentionEquilibriumSystem(EquilibriumEngine(), token_capacity=10_000)
+
+    def test_report_fields_default_zero(self, aes):
+        """Without calibration, rebalance fields are 0.0."""
+        aes.add_chunk("test")
         report = aes.collect_garbage()
-        assert report.chunks_before == 0
-        assert report.chunks_after == 0
-        assert report.calibration_active is True
+        assert report.calibration_weight_rebalance_alpha == 0.0
+        assert report.calibration_weight_rebalance_beta == 0.0
+
+    def test_report_fields_overconfident(self, aes):
+        """Overconfident calibration: report shows α+/β- rebalance."""
+        aes.set_calibration_state(
+            ece=0.20, bias=0.10, is_overconfident=True, total_predictions=30
+        )
+        aes.add_chunk("test content for rebalance report")
+        report = aes.collect_garbage()
+        assert report.calibration_weight_rebalance_alpha > 0.0
+        assert report.calibration_weight_rebalance_beta < 0.0
+
+    def test_report_fields_underconfident(self, aes):
+        """Underconfident calibration: report shows α-/β+ rebalance."""
+        aes.set_calibration_state(
+            ece=0.20, bias=0.10, is_underconfident=True, total_predictions=30
+        )
+        aes.add_chunk("test content for rebalance report")
+        report = aes.collect_garbage()
+        assert report.calibration_weight_rebalance_alpha < 0.0
+        assert report.calibration_weight_rebalance_beta > 0.0
+
+    def test_report_fields_low_ece_zero(self, aes):
+        """Low ECE (below 0.15): rebalance fields are 0.0."""
+        aes.set_calibration_state(
+            ece=0.10, bias=0.05, total_predictions=20
+        )
+        aes.add_chunk("test")
+        report = aes.collect_garbage()
+        assert report.calibration_weight_rebalance_alpha == 0.0
+        assert report.calibration_weight_rebalance_beta == 0.0
+
+    def test_summary_includes_rebalance_when_active(self, aes):
+        """GC summary includes calWΔ when weight rebalance is nonzero."""
+        aes.set_calibration_state(
+            ece=0.20, bias=0.10, is_overconfident=True, total_predictions=30
+        )
+        aes.add_chunk("test content for summary")
+        report = aes.collect_garbage()
+        summary = report.summary()
+        assert "calWΔ" in summary
+
+    def test_summary_excludes_rebalance_when_zero(self, aes):
+        """GC summary excludes calWΔ when rebalance is zero."""
+        aes.add_chunk("test")
+        report = aes.collect_garbage()
+        summary = report.summary()
+        assert "calWΔ" not in summary
+
+    def test_summary_excludes_rebalance_when_low_ece(self, aes):
+        """GC summary excludes calWΔ when ECE is below threshold."""
+        aes.set_calibration_state(ece=0.10, bias=0.05, total_predictions=20)
+        aes.add_chunk("test")
+        report = aes.collect_garbage()
+        summary = report.summary()
+        assert "calWΔ" not in summary
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Weight Rebalance Integration with _modulate_weights (iter-016)
+# ═══════════════════════════════════════════════════════════════════
+
+class TestModulateWeightsWithCalibration:
+    """_modulate_weights() incorporates calibration-driven rebalance."""
+
+    @pytest.fixture
+    def aes(self):
+        return AttentionEquilibriumSystem(EquilibriumEngine(), token_capacity=10_000)
+
+    def test_overconfident_increases_alpha_in_weights(self, aes):
+        """Overconfident: resulting α from _modulate_weights is higher than default."""
+        profile = {
+            "shallow_deep": 0.0,
+            "explore_exploit": 0.0,
+            "divergent_convergent": 0.0,
+        }
+
+        # Without calibration
+        alpha_no_cal, _, _, _ = aes._modulate_weights(profile)
+
+        # With overconfident calibration
+        aes.set_calibration_state(
+            ece=0.20, bias=0.10, is_overconfident=True, total_predictions=30
+        )
+        alpha_cal, beta_cal, _, _ = aes._modulate_weights(profile)
+
+        # Alpha should be higher with overconfident calibration
+        assert alpha_cal > alpha_no_cal
+
+    def test_underconfident_increases_beta_in_weights(self, aes):
+        """Underconfident: resulting β from _modulate_weights is higher than default."""
+        profile = {
+            "shallow_deep": 0.0,
+            "explore_exploit": 0.0,
+            "divergent_convergent": 0.0,
+        }
+
+        # Without calibration
+        alpha_no_cal, beta_no_cal, _, _ = aes._modulate_weights(profile)
+
+        # With underconfident calibration
+        aes.set_calibration_state(
+            ece=0.20, bias=0.10, is_underconfident=True, total_predictions=30
+        )
+        alpha_cal, beta_cal, _, _ = aes._modulate_weights(profile)
+
+        # Beta should be higher with underconfident calibration
+        assert beta_cal > beta_no_cal
+        assert alpha_cal < alpha_no_cal  # Alpha decreased
+
+    def test_weights_still_sum_to_one(self, aes):
+        """After calibration rebalance, weights still sum to 1.0."""
+        aes.set_calibration_state(
+            ece=0.25, bias=0.15, is_overconfident=True, total_predictions=50
+        )
+        profile = {
+            "shallow_deep": 0.0,
+            "explore_exploit": 0.0,
+            "divergent_convergent": 0.0,
+        }
+        alpha, beta, gamma, delta = aes._modulate_weights(profile)
+        assert alpha + beta + gamma + delta == pytest.approx(1.0)
+
+    def test_calibrate_rebalance_with_tensions(self, aes):
+        """Calibration rebalance composes with tension-based weight modulation."""
+        aes.set_calibration_state(
+            ece=0.20, bias=0.10, is_overconfident=True, total_predictions=30
+        )
+        # Explore tension (increases alpha)
+        profile = {
+            "shallow_deep": 0.0,
+            "explore_exploit": -1.0,  # Explore
+            "divergent_convergent": 0.0,
+        }
+        alpha, _, _, _ = aes._modulate_weights(profile)
+
+        # Both explore tension and overconfident rebalance push α up
+        # Default α is 0.35; explore adds +0.10; overconfident adds ~0.11
+        # Before normalization: α ≈ 0.35 + 0.10 + 0.11 = 0.56
+        assert alpha > 0.40  # Significantly above default
+
+    def test_no_rebalance_without_over_under_flag(self, aes):
+        """ECE > 0.15 but no over/underconfident flag: weights unchanged."""
+        aes.set_calibration_state(
+            ece=0.20, bias=0.10, total_predictions=30
+        )
+        profile = {
+            "shallow_deep": 0.0,
+            "explore_exploit": 0.0,
+            "divergent_convergent": 0.0,
+        }
+        alpha_cal, beta_cal, _, _ = aes._modulate_weights(profile)
+
+        # Without over/underconfident flag, weights should be the same as default
+        aes2 = AttentionEquilibriumSystem(EquilibriumEngine(), token_capacity=10_000)
+        alpha_default, beta_default, _, _ = aes2._modulate_weights(profile)
+
+        assert alpha_cal == pytest.approx(alpha_default)
+        assert beta_cal == pytest.approx(beta_default)

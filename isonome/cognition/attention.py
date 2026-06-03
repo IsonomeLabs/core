@@ -207,6 +207,7 @@ class AttentionEquilibriumSystem:
         self._calibration_ece: float = 0.0
         self._calibration_bias: float = 0.0
         self._calibration_overconfident: bool = False
+        self._calibration_underconfident: bool = False
         self._calibration_predictions: int = 0
         self._calibration_active: bool = False  # True once calibration data flows
 
@@ -274,6 +275,9 @@ class AttentionEquilibriumSystem:
         - Retention thresholds are lowered (keep MORE context)
         - GC aggressiveness is reduced
         - Recency decay is slowed
+        - Scoring weights are rebalanced (iter-016):
+          Overconfident → shift β→α (seek novelty, distrust relevance)
+          Underconfident → shift α→β (trust relevance, avoid distraction)
 
         The system requires >= 10 predictions before activation
         (matches the calibrator's minimum-data guard).
@@ -288,6 +292,7 @@ class AttentionEquilibriumSystem:
         self._calibration_ece = max(0.0, ece)
         self._calibration_bias = bias
         self._calibration_overconfident = is_overconfident
+        self._calibration_underconfident = is_underconfident
         self._calibration_predictions = total_predictions
         self._calibration_active = total_predictions >= 10
 
@@ -362,6 +367,81 @@ class AttentionEquilibriumSystem:
         modifier = kappa * ece * (1.0 + bias)
         return min(0.20, max(0.0, modifier))
 
+    def _compute_calibration_weight_rebalance(
+        self,
+    ) -> tuple[float, float]:
+        """Compute scoring weight adjustments from calibration quality.
+
+        When the system is poorly calibrated, its confidence in its own
+        task-relevance judgments is unreliable. This method shifts weight
+        between α (surprisal) and β (mutual information / task relevance):
+
+        - **Overconfident**: shift β → α. The system over-trusts its
+          relevance scoring, so it should seek novel/surprising content
+          instead of relying on potentially wrong task-relevance judgments.
+          Intuition: "I'm wrong about what's important → seek the unexpected."
+
+        - **Underconfident**: shift α → β. The system undervalues its
+          own relevance judgments, so it should trust them more and avoid
+          being distracted by novel but irrelevant content.
+          Intuition: "I'm actually better at judging relevance than I think
+          → trust my task focus."
+
+        - **Well-calibrated / moderate**: no shift. The system's weight
+          allocation is already trustworthy.
+
+        This mechanism is ADDITIVE with tension modulation (same pattern
+        as iter-008/009 retention/decay modifiers). It does NOT compose
+        with discrete calibration gates (iter-010 pattern).
+
+        Mathematical foundation:
+            ECE threshold for activation: 0.15 (matches iter-010 moderate tier)
+
+            Overconfident shift:
+                Δ = η × ECE × (1 + |bias|) × 1.2  (overconfidence bonus)
+                α += Δ,  β -= Δ
+
+            Underconfident shift:
+                Δ = η × ECE × (1 + |bias|)
+                α -= Δ,  β += Δ
+
+            η = 0.50 (weight rebalance sensitivity)
+            Bounded: |Δ| ≤ 0.12 (max 12% weight shift, conservative)
+
+        Returns:
+            (alpha_delta, beta_delta) — additive adjustments to α and β.
+            Both sum to zero (weight is redistributed, not created/destroyed).
+        """
+        if not self._calibration_active:
+            return (0.0, 0.0)
+
+        ece = self._calibration_ece
+        bias = abs(self._calibration_bias)
+
+        # Require significant miscalibration (ECE > 0.15) before rebalancing.
+        # Below this threshold, the system's confidence is reliable enough.
+        if ece < 0.15:
+            return (0.0, 0.0)
+
+        eta = 0.50  # Weight rebalance sensitivity
+        max_shift = 0.12  # Cap at 12% weight transfer
+
+        if self._calibration_overconfident:
+            # Overconfident: shift β → α (seek novelty, distrust relevance)
+            overconfidence_bonus = 1.2
+            delta = eta * ece * (1.0 + bias) * overconfidence_bonus
+            delta = min(delta, max_shift)
+            return (delta, -delta)
+
+        elif self._calibration_underconfident:
+            # Underconfident: shift α → β (trust relevance, avoid distraction)
+            delta = eta * ece * (1.0 + bias)
+            delta = min(delta, max_shift)
+            return (-delta, delta)
+
+        # Moderate miscalibration (ECE > 0.15 but neither over/underconfident)
+        return (0.0, 0.0)
+
     def collect_garbage(self) -> GarbageCollectionReport:
         """Run one garbage collection cycle.
 
@@ -392,10 +472,14 @@ class AttentionEquilibriumSystem:
         # modulation is additive, and they compose independently.
         cal_mod = self._compute_calibration_retention_modifier()
         keep_thresh += cal_mod
-        prune_thresh += cal_mod * 0.8  # Proportional (prune is more aggressive)
+        prune_thresh += cal_mod * 0.8 # Proportional (prune is more aggressive)
         # Re-clamp after calibration adjustment
         keep_thresh = max(0.1, min(0.95, keep_thresh))
         prune_thresh = max(0.05, min(0.90, prune_thresh))
+
+        # ── Calibration weight rebalance ──
+        # Computed above during _modulate_weights; retrieve for reporting
+        cal_alpha_delta, cal_beta_delta = self._compute_calibration_weight_rebalance()
 
         # Score all chunks
         scored: list[tuple[float, AttentionChunk]] = []
@@ -448,25 +532,27 @@ class AttentionEquilibriumSystem:
         self._budget.tokens_used -= tokens_freed
 
         return GarbageCollectionReport(
-            gc_cycle=self._gc_cycles,
-            chunks_before=len(scored),
-            chunks_after=len(kept) + len(compressed),
-            kept_count=len(kept),
-            compressed_count=len(compressed),
-            pruned_count=len(pruned),
-            tokens_freed=tokens_freed,
-            budget_utilization_before=max(0.0, self._budget.utilization),
-            budget_utilization_after=max(0.0, self._budget.utilization),
-            keep_threshold=keep_thresh,
-            prune_threshold=prune_thresh,
-            tension_profile=profile,
-            alpha=alpha,
-            beta=beta,
-            gamma=gamma,
-            delta=delta,
-            calibration_active=self._calibration_active,
-            calibration_ece=round(self._calibration_ece, 4),
-            calibration_modifier=round(cal_mod, 4),
+        	gc_cycle=self._gc_cycles,
+        	chunks_before=len(scored),
+        	chunks_after=len(kept) + len(compressed),
+        	kept_count=len(kept),
+        	compressed_count=len(compressed),
+        	pruned_count=len(pruned),
+        	tokens_freed=tokens_freed,
+        	budget_utilization_before=max(0.0, self._budget.utilization),
+        	budget_utilization_after=max(0.0, self._budget.utilization),
+        	keep_threshold=keep_thresh,
+        	prune_threshold=prune_thresh,
+        	tension_profile=profile,
+        	alpha=alpha,
+        	beta=beta,
+        	gamma=gamma,
+        	delta=delta,
+        	calibration_active=self._calibration_active,
+        	calibration_ece=round(self._calibration_ece, 4),
+        	calibration_modifier=round(cal_mod, 4),
+        	calibration_weight_rebalance_alpha=round(cal_alpha_delta, 4),
+        	calibration_weight_rebalance_beta=round(cal_beta_delta, 4),
         )
 
     def apply_recency_decay(self, decay_rate: float = 0.05) -> None:
@@ -578,10 +664,17 @@ class AttentionEquilibriumSystem:
             beta += 0.08
 
         # Divergent/Convergent modulation (±10% swing)
-        if diverge < 0:  # Divergent: favor surprisal (diversity)
-            alpha += 0.06
-        else:  # Convergent: favor task relevance
-            beta += 0.06
+        if diverge < 0: # Divergent: favor surprisal (diversity)
+        	alpha += 0.06
+        else: # Convergent: favor task relevance
+        	beta += 0.06
+
+        # Calibration-driven weight rebalance (iter-016)
+        # When miscalibrated, shift weight between α (surprisal) and β (MI).
+        # Overconfident → β→α (seek novelty), Underconfident → α→β (trust relevance)
+        cal_alpha_delta, cal_beta_delta = self._compute_calibration_weight_rebalance()
+        alpha += cal_alpha_delta
+        beta += cal_beta_delta
 
         # Normalize to sum to 1.0
         total = alpha + beta + gamma + delta
@@ -703,16 +796,26 @@ class GarbageCollectionReport:
     calibration_active: bool = False
     calibration_ece: float = 0.0
     calibration_modifier: float = 0.0
+    calibration_weight_rebalance_alpha: float = 0.0
+    calibration_weight_rebalance_beta: float = 0.0
 
     def summary(self) -> str:
-        base = (
-            f"GC#{self.gc_cycle}: {self.chunks_before}→{self.chunks_after} chunks "
-            f"(kept={self.kept_count}, comp={self.compressed_count}, "
-            f"pruned={self.pruned_count}) | "
-            f"freed {self.tokens_freed} tokens | "
-            f"util {self.budget_utilization_before:.1%}→{self.budget_utilization_after:.1%} | "
-            f"thresholds k={self.keep_threshold:.2f} p={self.prune_threshold:.2f}"
-        )
-        if self.calibration_active and abs(self.calibration_modifier) > 0.001:
-            base += f" | calΔ={self.calibration_modifier:+.3f} (ECE={self.calibration_ece:.3f})"
-        return base
+    	base = (
+    		f"GC#{self.gc_cycle}: {self.chunks_before}→{self.chunks_after} chunks "
+    		f"(kept={self.kept_count}, comp={self.compressed_count}, "
+    		f"pruned={self.pruned_count}) | "
+    		f"freed {self.tokens_freed} tokens | "
+    		f"util {self.budget_utilization_before:.1%}→{self.budget_utilization_after:.1%} | "
+    		f"thresholds k={self.keep_threshold:.2f} p={self.prune_threshold:.2f}"
+    	)
+    	if self.calibration_active and abs(self.calibration_modifier) > 0.001:
+    		base += f" | calΔ={self.calibration_modifier:+.3f} (ECE={self.calibration_ece:.3f})"
+    	if self.calibration_active and (
+    		abs(self.calibration_weight_rebalance_alpha) > 0.001
+    		or abs(self.calibration_weight_rebalance_beta) > 0.001
+    	):
+    		base += (
+    			f" | calWΔ α={self.calibration_weight_rebalance_alpha:+.4f}"
+    			f" β={self.calibration_weight_rebalance_beta:+.4f}"
+    		)
+    	return base
