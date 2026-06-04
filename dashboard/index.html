@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Isonome Framework Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2333;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-muted: #8b949e;
+    --accent-cognition: #58a6ff;
+    --accent-praxis: #f78166;
+    --accent-mneme: #7ee787;
+    --accent-warning: #d29922;
+    --accent-danger: #f85149;
+    --accent-purple: #bc8cff;
+    --positive: #3fb950;
+    --negative: #f85149;
+    --neutral: #8b949e;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Header ──────────────────────────────────────────── */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .header h1 span { color: var(--accent-purple); }
+  .lifecycle-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .lifecycle-badge .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .lifecycle-idle { background: #1f3a1f; color: var(--positive); }
+  .lifecycle-idle .dot { background: var(--positive); }
+  .lifecycle-reasoning { background: #1a2f4a; color: var(--accent-cognition); }
+  .lifecycle-reasoning .dot { background: var(--accent-cognition); }
+  .lifecycle-acting { background: #3a2010; color: var(--accent-praxis); }
+  .lifecycle-acting .dot { background: var(--accent-praxis); }
+  .lifecycle-consolidating { background: #1a3a20; color: var(--accent-mneme); }
+  .lifecycle-consolidating .dot { background: var(--accent-mneme); }
+  .lifecycle-bootstrapping { background: #2a1f3a; color: var(--accent-purple); }
+  .lifecycle-bootstrapping .dot { background: var(--accent-purple); }
+  .lifecycle-terminated { background: #3a1a1a; color: var(--accent-danger); }
+  .lifecycle-terminated .dot { background: var(--accent-danger); animation: none; }
+  .lifecycle-created { background: #2a2520; color: var(--accent-warning); }
+  .lifecycle-created .dot { background: var(--accent-warning); }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  .tick-counter {
+    font-family: "SF Mono", "Cascadia Code", monospace;
+    font-size: 14px;
+    color: var(--accent-purple);
+  }
+
+  /* ── Layout ──────────────────────────────────────────── */
+  .dashboard {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto auto;
+    gap: 16px;
+    padding: 20px 24px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .panel-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+  }
+  .panel-wide { grid-column: 1 / -1; }
+
+  /* ── Tension Axes ────────────────────────────────────── */
+  .tension-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .tension-axis {
+    display: grid;
+    grid-template-columns: 140px 1fr 48px;
+    align-items: center;
+    gap: 8px;
+  }
+  .axis-label {
+    font-size: 12px;
+    font-weight: 500;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .axis-name { font-weight: 600; }
+  .axis-poles {
+    font-size: 10px;
+    color: var(--text-muted);
+    display: flex;
+    justify-content: space-between;
+  }
+  .axis-bar-container {
+    position: relative;
+    height: 22px;
+    background: var(--surface2);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .axis-bar-default {
+    position: absolute;
+    top: 0;
+    width: 2px;
+    height: 100%;
+    background: var(--text-muted);
+    opacity: 0.6;
+    z-index: 2;
+  }
+  .axis-bar-fill {
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    border-radius: 2px;
+    transition: width 0.4s ease, left 0.4s ease;
+  }
+  .axis-bar-center {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    width: 1px;
+    height: 100%;
+    background: var(--border);
+    z-index: 1;
+  }
+  .axis-value {
+    font-family: "SF Mono", "Cascadia Code", monospace;
+    font-size: 11px;
+    text-align: right;
+    font-weight: 500;
+  }
+  .pillar-cognition .axis-bar-fill { background: var(--accent-cognition); }
+  .pillar-praxis .axis-bar-fill { background: var(--accent-praxis); }
+  .pillar-mneme .axis-bar-fill { background: var(--accent-mneme); }
+  .pillar-cognition .axis-name { color: var(--accent-cognition); }
+  .pillar-praxis .axis-name { color: var(--accent-praxis); }
+  .pillar-mneme .axis-name { color: var(--accent-mneme); }
+  .axis-oscillating {
+    animation: oscillate-glow 0.8s ease-in-out infinite alternate;
+  }
+  @keyframes oscillate-glow {
+    from { box-shadow: 0 0 4px var(--accent-danger); }
+    to { box-shadow: 0 0 12px var(--accent-danger); }
+  }
+  .axis-oscillating .axis-bar-fill {
+    background: var(--accent-danger) !important;
+  }
+
+  /* ── Stress Meter ────────────────────────────────────── */
+  .stress-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .stress-gauge {
+    position: relative;
+    width: 180px;
+    height: 100px;
+    overflow: hidden;
+  }
+  .stress-gauge svg {
+    width: 100%;
+    height: 100%;
+  }
+  .stress-value {
+    position: absolute;
+    bottom: 4px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: "SF Mono", monospace;
+    font-size: 24px;
+    font-weight: 700;
+  }
+  .stress-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-align: center;
+  }
+  .stress-low { color: var(--positive); }
+  .stress-medium { color: var(--accent-warning); }
+  .stress-high { color: var(--accent-danger); }
+
+  /* ── Pillar Activity ─────────────────────────────────── */
+  .pillar-panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+  }
+  .pillar-card {
+    background: var(--surface2);
+    border-radius: 6px;
+    padding: 12px;
+    border-left: 3px solid var(--border);
+  }
+  .pillar-card-cognition { border-left-color: var(--accent-cognition); }
+  .pillar-card-praxis { border-left-color: var(--accent-praxis); }
+  .pillar-card-mneme { border-left-color: var(--accent-mneme); }
+  .pillar-card-name {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+  .pillar-card-cognition .pillar-card-name { color: var(--accent-cognition); }
+  .pillar-card-praxis .pillar-card-name { color: var(--accent-praxis); }
+  .pillar-card-mneme .pillar-card-name { color: var(--accent-mneme); }
+  .pillar-stat {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    padding: 2px 0;
+  }
+  .pillar-stat-label { color: var(--text-muted); }
+  .pillar-stat-value {
+    font-family: "SF Mono", monospace;
+    font-weight: 500;
+  }
+  .oscillation-warning {
+    display: inline-block;
+    background: #3a1a1a;
+    color: var(--accent-danger);
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-left: 4px;
+  }
+
+  /* ── Attention Budget ────────────────────────────────── */
+  .budget-bar {
+    height: 20px;
+    background: var(--surface2);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+  }
+  .budget-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-cognition), var(--accent-purple));
+    border-radius: 4px;
+    transition: width 0.6s ease;
+  }
+  .budget-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+  }
+  .attention-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-top: 12px;
+  }
+  .att-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .att-stat-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
+  .att-stat-value {
+    font-family: "SF Mono", monospace;
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  /* ── Mneme Stats ─────────────────────────────────────── */
+  .mneme-tiers {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .mneme-tier {
+    flex: 1;
+    text-align: center;
+    padding: 10px 8px;
+    background: var(--surface2);
+    border-radius: 6px;
+    border-top: 3px solid var(--accent-mneme);
+  }
+  .mneme-tier-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
+  .mneme-tier-count {
+    font-family: "SF Mono", monospace;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--accent-mneme);
+  }
+  .mneme-ops {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .mneme-op { font-size: 11px; display: flex; justify-content: space-between; }
+  .mneme-op-label { color: var(--text-muted); }
+  .mneme-op-value { font-family: "SF Mono", monospace; }
+
+  /* ── Calibration ─────────────────────────────────────── */
+  .cal-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .cal-metric {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    background: var(--surface2);
+    border-radius: 6px;
+  }
+  .cal-metric-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .cal-metric-value {
+    font-family: "SF Mono", monospace;
+    font-size: 20px;
+    font-weight: 700;
+  }
+  .cal-ece-good { color: var(--positive); }
+  .cal-ece-moderate { color: var(--accent-warning); }
+  .cal-ece-bad { color: var(--accent-danger); }
+
+  /* ── Feedback Counter ────────────────────────────────── */
+  .feedback-row {
+    display: flex;
+    gap: 24px;
+    margin-top: 4px;
+  }
+  .feedback-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .feedback-num {
+    font-family: "SF Mono", monospace;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--accent-purple);
+  }
+  .feedback-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+  }
+
+  /* ── Connection status ──────────────────────────────── */
+  .connection-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+  }
+  .connection-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .connected .connection-dot { background: var(--positive); }
+  .disconnected .connection-dot { background: var(--accent-danger); animation: pulse 1s infinite; }
+  .connected { color: var(--positive); }
+  .disconnected { color: var(--accent-danger); }
+
+  /* ── Responsive ──────────────────────────────────────── */
+  @media (max-width: 900px) {
+    .dashboard { grid-template-columns: 1fr; }
+    .pillar-panels { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-left">
+    <h1>⚡ <span>isonome</span> dashboard</h1>
+    <div id="lifecycle" class="lifecycle-badge lifecycle-created">
+      <span class="dot"></span>
+      <span id="lifecycle-text">INITIALIZING</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <div id="connection" class="connection-status disconnected">
+      <span class="connection-dot"></span>
+      <span id="connection-text">Connecting...</span>
+    </div>
+    <div>Agent: <strong id="agent-name">—</strong></div>
+    <div class="tick-counter">⏱ Tick <span id="tick-count">0</span></div>
+  </div>
+</div>
+
+<!-- Dashboard Grid -->
+<div class="dashboard">
+
+  <!-- Tension Axes Panel (full width) -->
+  <div class="panel panel-wide">
+    <div class="panel-title">♉ Tension Axes</div>
+    <div class="tension-grid" id="tension-grid">
+      <!-- Filled by JS -->
+    </div>
+  </div>
+
+  <!-- Stress Meter -->
+  <div class="panel">
+    <div class="panel-title">📊 Stress Level</div>
+    <div class="stress-container">
+      <div class="stress-gauge">
+        <svg viewBox="0 0 200 110">
+          <!-- Background arc -->
+          <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="#30363d" stroke-width="12" stroke-linecap="round"/>
+          <!-- Filled arc (will be updated by JS) -->
+          <path id="stress-arc" d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="#3fb950" stroke-width="12" stroke-linecap="round" stroke-dasharray="251" stroke-dashoffset="251"/>
+          <!-- Tick marks -->
+          <text x="15" y="108" font-size="9" fill="#8b949e" text-anchor="middle">0</text>
+          <text x="100" y="18" font-size="9" fill="#8b949e" text-anchor="middle">0.5</text>
+          <text x="185" y="108" font-size="9" fill="#8b949e" text-anchor="middle">1.0</text>
+        </svg>
+        <div id="stress-value" class="stress-value stress-low">0.00</div>
+      </div>
+      <div id="stress-label" class="stress-label">Homeostatic equilibrium</div>
+    </div>
+    <!-- Feedback counters -->
+    <div class="feedback-row" style="justify-content: center; margin-top: 16px;">
+      <div class="feedback-item">
+        <span id="feedback-count" class="feedback-num">0</span>
+        <span class="feedback-label">Feedback</span>
+      </div>
+      <div class="feedback-item">
+        <span id="osc-events" class="feedback-num">0</span>
+        <span class="feedback-label">Oscillations</span>
+      </div>
+      <div class="feedback-item">
+        <span id="task-count" class="feedback-num">0</span>
+        <span class="feedback-label">Tasks</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Calibration Panel -->
+  <div class="panel">
+    <div class="panel-title">🎯 Calibration</div>
+    <div class="cal-grid">
+      <div class="cal-metric">
+        <span class="cal-metric-label">ECE</span>
+        <span id="cal-ece" class="cal-metric-value cal-ece-good">0.000</span>
+      </div>
+      <div class="cal-metric">
+        <span class="cal-metric-label">Bias</span>
+        <span id="cal-bias" class="cal-metric-value" style="color:var(--text)">0.000</span>
+      </div>
+      <div class="cal-metric">
+        <span class="cal-metric-label">MCE</span>
+        <span id="cal-mce" class="cal-metric-value" style="color:var(--text-muted)">0.000</span>
+      </div>
+      <div class="cal-metric">
+        <span class="cal-metric-label">Predictions</span>
+        <span id="cal-preds" class="cal-metric-value" style="color:var(--accent-purple)">0</span>
+      </div>
+    </div>
+    <div style="margin-top: 12px; font-size: 11px; color: var(--text-muted);">
+      <div>Task type: <strong id="task-type" style="color:var(--text)">—</strong></div>
+      <div style="margin-top: 4px;">Profiles learned: <span id="profiles-count" style="color:var(--accent-mneme)">0</span></div>
+    </div>
+  </div>
+
+  <!-- Pillar Activity -->
+  <div class="panel panel-wide">
+    <div class="panel-title">🏛 Pillar Activity</div>
+    <div class="pillar-panels">
+      <!-- Cognition -->
+      <div class="pillar-card pillar-card-cognition">
+        <div class="pillar-card-name">νοῦς Cognition</div>
+        <div id="pillar-cognition-stats">
+          <div class="pillar-stat"><span class="pillar-stat-label">Axes</span><span class="pillar-stat-value" id="cog-axes">—</span></div>
+          <div class="pillar-stat"><span class="pillar-stat-label">Stress</span><span class="pillar-stat-value" id="cog-stress">—</span></div>
+          <div class="pillar-stat"><span class="pillar-stat-label">Oscillating</span><span class="pillar-stat-value" id="cog-osc">—</span></div>
+          <div class="pillar-stat"><span class="pillar-stat-label">Initialized</span><span class="pillar-stat-value" id="cog-init">—</span></div>
+        </div>
+      </div>
+      <!-- Praxis -->
+      <div class="pillar-card pillar-card-praxis">
+        <div class="pillar-card-name">πρᾶξις Praxis</div>
+        <div id="pillar-praxis-stats">
+          <div class="pillar-stat"><span class="pillar-stat-label">Axes</span><span class="pillar-stat-value" id="prax-axes">—</span></div>
+          <div class="pillar-stat"><span class="pillar-stat-label">Stress</span><span class="pillar-stat-value" id="prax-stress">—</span></div>
+          <div class="pillar-stat"><span class="pillar-stat-label">Oscillating</span><span class="pillar-stat-value" id="prax-osc">—</span></div>
+          <div class="pillar-stat"><span class="pillar-stat-label">Initialized</span><span class="pillar-stat-value" id="prax-init">—</span></div>
+        </div>
+      </div>
+      <!-- Mneme -->
+      <div class="pillar-card pillar-card-mneme">
+        <div class="pillar-card-name">μνήμη Mneme</div>
+        <div id="pillar-mneme-stats">
+          <div class="pillar-stat"><span class="pillar-stat-label">Axes</span><span class="pillar-stat-value" id="mn-axes">—</span></div>
+          <div class="pillar-stat"><span class="pillar-stat-label">Stress</span><span class="pillar-stat-value" id="mn-stress">—</span></div>
+          <div class="pillar-stat"><span class="pillar-stat-label">Oscillating</span><span class="pillar-stat-value" id="mn-osc">—</span></div>
+          <div class="pillar-stat"><span class="pillar-stat-label">Initialized</span><span class="pillar-stat-value" id="mn-init">—</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Attention Budget -->
+  <div class="panel">
+    <div class="panel-title">🧠 Attention Budget</div>
+    <div class="budget-bar">
+      <div id="budget-fill" class="budget-bar-fill" style="width: 0%"></div>
+    </div>
+    <div class="budget-labels">
+      <span id="budget-used">0 tokens</span>
+      <span id="budget-capacity">128K capacity</span>
+    </div>
+    <div class="attention-stats">
+      <div class="att-stat">
+        <span class="att-stat-label">Active Chunks</span>
+        <span class="att-stat-value" id="att-chunks" style="color:var(--accent-cognition)">0</span>
+      </div>
+      <div class="att-stat">
+        <span class="att-stat-label">Entropy</span>
+        <span class="att-stat-value" id="att-entropy" style="color:var(--accent-purple)">0.0</span>
+      </div>
+      <div class="att-stat">
+        <span class="att-stat-label">GC Cycles</span>
+        <span class="att-stat-value" id="att-gc" style="color:var(--text-muted)">0</span>
+      </div>
+      <div class="att-stat">
+        <span class="att-stat-label">Pruned</span>
+        <span class="att-stat-value" id="att-pruned" style="color:var(--accent-praxis)">0</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mneme Memory Stats -->
+  <div class="panel">
+    <div class="panel-title">💾 Memory (Mneme)</div>
+    <div class="mneme-tiers">
+      <div class="mneme-tier">
+        <div class="mneme-tier-label">Working</div>
+        <div class="mneme-tier-count" id="mneme-working">0</div>
+      </div>
+      <div class="mneme-tier">
+        <div class="mneme-tier-label">Episodic</div>
+        <div class="mneme-tier-count" id="mneme-episodic">0</div>
+      </div>
+      <div class="mneme-tier">
+        <div class="mneme-tier-label">Semantic</div>
+        <div class="mneme-tier-count" id="mneme-semantic">0</div>
+      </div>
+    </div>
+    <div class="mneme-ops">
+      <div class="mneme-op"><span class="mneme-op-label">Consolidations</span><span class="mneme-op-value" id="mneme-consol">0</span></div>
+      <div class="mneme-op"><span class="mneme-op-label">Pruned</span><span class="mneme-op-value" id="mneme-pruned">0</span></div>
+      <div class="mneme-op"><span class="mneme-op-label">Rehearsals</span><span class="mneme-op-value" id="mneme-rehearse">0</span></div>
+      <div class="mneme-op"><span class="mneme-op-label">Retrievals</span><span class="mneme-op-value" id="mneme-retrieve">0</span></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── State polling ──────────────────────────────────────────────
+const POLL_INTERVAL = 1000; // ms
+let connected = false;
+let lastState = null;
+
+async function fetchState() {
+  try {
+    const resp = await fetch("/api/state");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    lastState = data;
+    setConnected(true);
+    render(data);
+  } catch (e) {
+    setConnected(false);
+    console.warn("Dashboard fetch error:", e.message);
+  }
+}
+
+function setConnected(val) {
+  connected = val;
+  const el = document.getElementById("connection");
+  const txt = document.getElementById("connection-text");
+  if (val) {
+    el.className = "connection-status connected";
+    txt.textContent = "Live";
+  } else {
+    el.className = "connection-status disconnected";
+    txt.textContent = "Disconnected";
+  }
+}
+
+// ── Render ─────────────────────────────────────────────────────
+function render(state) {
+  renderHeader(state);
+  renderTensions(state);
+  renderStress(state);
+  renderPillars(state);
+  renderAttention(state);
+  renderMneme(state);
+  renderCalibration(state);
+}
+
+function renderHeader(state) {
+  const a = state.agent;
+  document.getElementById("agent-name").textContent = a.name;
+  document.getElementById("tick-count").textContent = a.tick_count;
+
+  // Lifecycle badge
+  const lc = a.lifecycle;
+  const badge = document.getElementById("lifecycle");
+  badge.className = `lifecycle-badge lifecycle-${lc}`;
+  document.getElementById("lifecycle-text").textContent = lc.toUpperCase();
+
+  // Feedback / task counters
+  document.getElementById("feedback-count").textContent = state.feedback_count || 0;
+  document.getElementById("osc-events").textContent = state.oscillation_events || 0;
+  document.getElementById("task-count").textContent = a.task_count || 0;
+}
+
+function renderTensions(state) {
+  const grid = document.getElementById("tension-grid");
+  const axes = state.tensions.axes;
+  const oscillating = new Set(state.tensions.oscillating || []);
+
+  // Build or update axis bars
+  if (grid.children.length !== axes.length) {
+    grid.innerHTML = "";
+    for (const axis of axes) {
+      const div = document.createElement("div");
+      div.className = `tension-axis pillar-${axis.pillar}`;
+      div.id = `axis-${axis.id}`;
+      div.innerHTML = `
+        <div class="axis-label">
+          <span class="axis-name">${axis.id.replace(/_/g, " ⟷ ")}</span>
+          <div class="axis-poles">
+            <span>${axis.pole_left}</span>
+            <span>${axis.pole_right}</span>
+          </div>
+        </div>
+        <div class="axis-bar-container">
+          <div class="axis-bar-center"></div>
+          <div class="axis-bar-default" id="default-${axis.id}"></div>
+          <div class="axis-bar-fill" id="fill-${axis.id}"></div>
+        </div>
+        <div class="axis-value" id="val-${axis.id}">${axis.position.toFixed(2)}</div>
+      `;
+      grid.appendChild(div);
+    }
+  }
+
+  // Update values
+  for (const axis of axes) {
+    const fill = document.getElementById(`fill-${axis.id}`);
+    const defLine = document.getElementById(`default-${axis.id}`);
+    const val = document.getElementById(`val-${axis.id}`);
+    const container = document.getElementById(`axis-${axis.id}`);
+
+    if (!fill) continue;
+
+    // Position maps: -1..1 → 0%..100%
+    const pos_pct = ((axis.position + 1) / 2) * 100;
+    const def_pct = ((axis.default_position + 1) / 2) * 100;
+
+    if (axis.position >= 0) {
+      const center = 50;
+      fill.style.left = center + "%";
+      fill.style.width = (pos_pct - center) + "%";
+    } else {
+      const center = 50;
+      fill.style.left = pos_pct + "%";
+      fill.style.width = (center - pos_pct) + "%";
+    }
+
+    defLine.style.left = def_pct + "%";
+    val.textContent = axis.position.toFixed(2);
+
+    // Oscillation warning
+    const isOsc = oscillating.has(axis.id);
+    const barContainer = container.querySelector(".axis-bar-container");
+    if (isOsc) {
+      barContainer.classList.add("axis-oscillating");
+      val.style.color = "var(--accent-danger)";
+    } else {
+      barContainer.classList.remove("axis-oscillating");
+      val.style.color = "";
+    }
+  }
+}
+
+function renderStress(state) {
+  const stress = state.tensions.stress;
+  const val = document.getElementById("stress-value");
+  const label = document.getElementById("stress-label");
+  const arc = document.getElementById("stress-arc");
+
+  val.textContent = stress.toFixed(3);
+
+  // Color class
+  val.className = "stress-value";
+  if (stress < 0.15) {
+    val.classList.add("stress-low");
+    label.textContent = "Homeostatic equilibrium";
+    arc.setAttribute("stroke", "#3fb950");
+  } else if (stress < 0.35) {
+    val.classList.add("stress-medium");
+    label.textContent = "Mild perturbation — adapting";
+    arc.setAttribute("stroke", "#d29922");
+  } else {
+    val.classList.add("stress-high");
+    label.textContent = "High stress — corrective feedback active";
+    arc.setAttribute("stroke", "#f85149");
+  }
+
+  // Arc fill (semicircle with total length ~251)
+  const arcLen = 251;
+  const offset = arcLen * (1 - Math.min(stress, 1.0));
+  arc.setAttribute("stroke-dashoffset", offset);
+}
+
+function renderPillars(state) {
+  const pa = state.pillar_activity || {};
+  const mapping = {
+    cognition: { axes: "cog-axes", stress: "cog-stress", osc: "cog-osc", init: "cog-init" },
+    praxis: { axes: "prax-axes", stress: "prax-stress", osc: "prax-osc", init: "prax-init" },
+    mneme: { axes: "mn-axes", stress: "mn-stress", osc: "mn-osc", init: "mn-init" },
+  };
+
+  for (const [pillar, ids] of Object.entries(mapping)) {
+    const data = pa[pillar];
+    if (!data) continue;
+
+    document.getElementById(ids.axes).textContent = Object.keys(data.own_axes || {}).length;
+    document.getElementById(ids.stress).textContent = (data.stress_level || 0).toFixed(3);
+
+    const oscList = data.oscillating || [];
+    const oscEl = document.getElementById(ids.osc);
+    if (oscList.length > 0) {
+      oscEl.innerHTML = oscList.length + '<span class="oscillation-warning">⚠ OSC</span>';
+    } else {
+      oscEl.textContent = "0";
+    }
+
+    document.getElementById(ids.init).textContent = data.initialized ? "✓" : "✗";
+  }
+}
+
+function renderAttention(state) {
+  const att = state.attention;
+  if (!att) {
+    document.getElementById("budget-fill").style.width = "0%";
+    document.getElementById("budget-used").textContent = "No attention system";
+    return;
+  }
+
+  const util = att.utilization || 0;
+  document.getElementById("budget-fill").style.width = (util * 100).toFixed(1) + "%";
+  document.getElementById("budget-used").textContent = formatTokens(att.tokens_used || 0);
+  document.getElementById("budget-capacity").textContent = formatTokens(att.token_capacity || 128000) + " capacity";
+  document.getElementById("att-chunks").textContent = att.chunks_active || 0;
+  document.getElementById("att-entropy").textContent = (att.entropy_estimate || 0).toFixed(1);
+  document.getElementById("att-gc").textContent = att.gc_cycles || 0;
+  document.getElementById("att-pruned").textContent = att.total_pruned || 0;
+}
+
+function renderMneme(state) {
+  const mn = state.mneme;
+  if (!mn) return;
+
+  document.getElementById("mneme-working").textContent = mn.working_count || 0;
+  document.getElementById("mneme-episodic").textContent = mn.episodic_count || 0;
+  document.getElementById("mneme-semantic").textContent = mn.semantic_count || 0;
+  document.getElementById("mneme-consol").textContent = mn.total_consolidations || 0;
+  document.getElementById("mneme-pruned").textContent = mn.total_pruned || 0;
+  document.getElementById("mneme-rehearse").textContent = mn.total_rehearsals || 0;
+  document.getElementById("mneme-retrieve").textContent = mn.total_retrievals || 0;
+}
+
+function renderCalibration(state) {
+  const cal = state.calibration;
+  if (!cal) return;
+
+  const ece = cal.ece || 0;
+  const eceEl = document.getElementById("cal-ece");
+  eceEl.textContent = ece.toFixed(3);
+  eceEl.className = "cal-metric-value";
+  if (ece <= 0.05) eceEl.classList.add("cal-ece-good");
+  else if (ece <= 0.15) eceEl.classList.add("cal-ece-moderate");
+  else eceEl.classList.add("cal-ece-bad");
+
+  document.getElementById("cal-bias").textContent = (cal.bias || 0).toFixed(3);
+  document.getElementById("cal-mce").textContent = (cal.mce || 0).toFixed(3);
+  document.getElementById("cal-preds").textContent = cal.total_predictions || 0;
+  document.getElementById("task-type").textContent = state.agent.current_task_type || "—";
+
+  const profiles = state.task_type_profiles || {};
+  document.getElementById("profiles-count").textContent = Object.keys(profiles).length;
+}
+
+// ── Helpers ────────────────────────────────────────────────────
+function formatTokens(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+  return n.toString();
+}
+
+// ── Start polling ──────────────────────────────────────────────
+fetchState();
+setInterval(fetchState, POLL_INTERVAL);
+</script>
+
+</body>
+</html>
