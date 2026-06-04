@@ -30,23 +30,20 @@ Pillar integration:
 from __future__ import annotations
 
 import hashlib
-import json
 import math
+import re
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 from uuid import UUID, uuid4
 
 from isonome.types import (
-    AgentState,
     Feedback,
-    Pillar,
-    Signal,
     TensionID,
-    now,
 )
+from isonome.utils.frozendict import frozendict
 
 # ═══════════════════════════════════════════════════════════════════
 # Memory tiers
@@ -67,22 +64,7 @@ class MemoryTier(Enum):
 
 
 # Immutable dict for MemoryEntry metadata — must be defined before MemoryEntry
-class frozendict(dict):
-    """An immutable dictionary."""
-
-    def __hash__(self):
-        return hash(frozenset(self.items()))
-
-    def _immutable(self, *args, **kwargs):
-        raise TypeError("frozendict is immutable")
-
-    __setitem__ = _immutable
-    __delitem__ = _immutable
-    clear = _immutable
-    pop = _immutable
-    popitem = _immutable
-    setdefault = _immutable
-    update = _immutable
+# frozendict imported from isonome.utils (see utils/frozendict.py)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -426,6 +408,15 @@ class HierarchicalMneme:
             results.append(self.store(content, significance=sig, source=source))
         return results
 
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        """Tokenize text for recall matching, stripping punctuation.
+
+        Splits on whitespace and strips leading/trailing punctuation
+        so that quoted words like 'deploy' match unquoted 'deploy'.
+        """
+        return {re.sub(r'^\W+|\W+$', '', t) for t in text.lower().split() if re.sub(r'^\W+|\W+$', '', t)}
+
     # ══════════════════════════════════════════════════════════════
     # Public API — Retrieval
     # ══════════════════════════════════════════════════════════════
@@ -456,7 +447,7 @@ class HierarchicalMneme:
         Returns:
             Sorted list of matching MemoryEntry items (strongest first).
         """
-        query_tokens = set(query.lower().split())
+        query_tokens = self._tokenize(query)
         specific_bias = self._current_profile.get("specific_general", 0.0)
 
         candidates: list[tuple[float, MemoryEntry]] = []
@@ -552,9 +543,9 @@ class HierarchicalMneme:
         cons_sig, prom_sig = self._modulate_thresholds()
 
         # Phase 1: Apply forgetting
-        forgotten_working = 0
-        forgotten_episodic = 0
-        forgotten_semantic = 0
+        _forgotten_working = 0  # noqa: F841
+        _forgotten_episodic = 0  # noqa: F841
+        _forgotten_semantic = 0  # noqa: F841
 
         for tier, collection, counter_attr in [
             (MemoryTier.WORKING, self._working, "forgotten_working"),
@@ -626,11 +617,11 @@ class HierarchicalMneme:
                 del collection[eid]
                 pruned += 1
             if counter_attr == "forgotten_working":
-                forgotten_working = len(to_remove)
+                pass  # count tracked via pruned counter
             elif counter_attr == "forgotten_episodic":
-                forgotten_episodic = len(to_remove)
+                pass  # count tracked via pruned counter
             else:
-                forgotten_semantic = len(to_remove)
+                pass  # count tracked via pruned counter
 
         # ── Calibration-aware pruning sensitivity ──
         # When the agent is overconfident, it underestimates how much
@@ -649,7 +640,6 @@ class HierarchicalMneme:
             # discarded but CALIBRATION saved.
             if spared > 0 and counter_attr == "forgotten_working":
                 # Re-register spared entries into working memory at reduced strength
-                import math
                 re_added = 0
                 for eid in list(self._working.keys()):
                     if re_added >= spared:
@@ -907,106 +897,7 @@ class HierarchicalMneme:
         self._pending_feedback.clear()
         return result
 
-    # ══════════════════════════════════════════════════════════════
-    # Public API — Serialization
-    # ══════════════════════════════════════════════════════════════
 
-    def to_dict(self) -> dict:
-        """Serialize the full memory state for cross-session persistence."""
-        return {
-            "working": [
-                {
-                    "id": str(e.id),
-                    "content": e.content,
-                    "strength": e.strength,
-                    "significance": e.significance,
-                    "created_at": e.created_at,
-                    "last_rehearsed": e.last_rehearsed,
-                    "rehearsal_count": e.rehearsal_count,
-                    "access_count": e.access_count,
-                    "source": e.source,
-                    "tags": list(e.tags),
-                    "base_half_life": e.base_half_life,
-                }
-                for e in self._working.values()
-            ],
-            "episodic": [
-                {
-                    "id": str(e.id),
-                    "content": e.content,
-                    "strength": e.strength,
-                    "significance": e.significance,
-                    "created_at": e.created_at,
-                    "last_rehearsed": e.last_rehearsed,
-                    "rehearsal_count": e.rehearsal_count,
-                    "access_count": e.access_count,
-                    "source": e.source,
-                    "tags": list(e.tags),
-                    "base_half_life": e.base_half_life,
-                }
-                for e in self._episodic.values()
-            ],
-            "semantic": [
-                {
-                    "id": str(e.id),
-                    "content": e.content,
-                    "strength": e.strength,
-                    "significance": e.significance,
-                    "created_at": e.created_at,
-                    "last_rehearsed": e.last_rehearsed,
-                    "rehearsal_count": e.rehearsal_count,
-                    "access_count": e.access_count,
-                    "source": e.source,
-                    "tags": list(e.tags),
-                    "base_half_life": e.base_half_life,
-                }
-                for e in self._semantic.values()
-            ],
-            "pattern_frequencies": dict(self._pattern_frequencies),
-            "stats": self._stats.summary(),
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> HierarchicalMneme:
-        """Deserialize from a dictionary produced by to_dict()."""
-        mneme = cls()
-
-        def _deserialize_entry(d: dict, tier: MemoryTier) -> MemoryEntry:
-            return MemoryEntry(
-                id=UUID(d["id"]),
-                content=d["content"],
-                tier=tier,
-                strength=d["strength"],
-                significance=d["significance"],
-                created_at=d["created_at"],
-                last_rehearsed=d["last_rehearsed"],
-                rehearsal_count=d["rehearsal_count"],
-                access_count=d["access_count"],
-                source=d.get("source"),
-                tags=tuple(d.get("tags", ())),
-                base_half_life=d.get("base_half_life", 3600.0),
-            )
-
-        for d in data.get("working", []):
-            entry = _deserialize_entry(d, MemoryTier.WORKING)
-            mneme._working[entry.id] = entry
-
-        for d in data.get("episodic", []):
-            entry = _deserialize_entry(d, MemoryTier.EPISODIC)
-            mneme._episodic[entry.id] = entry
-
-        for d in data.get("semantic", []):
-            entry = _deserialize_entry(d, MemoryTier.SEMANTIC)
-            mneme._semantic[entry.id] = entry
-
-        mneme._pattern_frequencies = data.get("pattern_frequencies", {})
-
-        # Rebuild stats from actual collections
-        mneme._stats.working_count = len(mneme._working)
-        mneme._stats.episodic_count = len(mneme._episodic)
-        mneme._stats.semantic_count = len(mneme._semantic)
-
-        return mneme
 
     # ══════════════════════════════════════════════════════════════
     # Properties
@@ -1118,7 +1009,7 @@ class HierarchicalMneme:
         # Requires ≥10 predictions to activate (avoids startup noise)
         if self._calibration_total_predictions >= 10:
             ece = self._calibration_ece
-            bias_mag = abs(self._calibration_bias)
+            # bias magnitude available as abs(self._calibration_bias) if needed
             
             # Core ECE modulation: high ECE → raise thresholds
             #   Δ_cal = ECE × 0.30  (at ECE=0.20: +Δ 0.06)
@@ -1155,7 +1046,7 @@ class HierarchicalMneme:
         if not query_tokens:
             return 0.0
 
-        entry_tokens = set(entry.content.lower().split())
+        entry_tokens = self._tokenize(entry.content)
         if not entry_tokens:
             return 0.0
 
@@ -1202,7 +1093,7 @@ class HierarchicalMneme:
         if not self._pattern_frequencies:
             return False
 
-        tokens = entry.content.lower().split()
+        tokens = [re.sub(r"^\W+|\W+$", "", t) for t in entry.content.lower().split() if re.sub(r"^\W+|\W+$", "", t)]
         if not tokens:
             return False
 
@@ -1252,7 +1143,7 @@ class HierarchicalMneme:
 
     def _update_patterns(self, content: str, tags: tuple[str, ...]) -> None:
         """Update n-gram frequencies and tag co-occurrence for pattern extraction."""
-        tokens = content.lower().split()
+        tokens = [re.sub(r"^\W+|\W+$", "", t) for t in content.lower().split() if re.sub(r"^\W+|\W+$", "", t)]
         for i in range(len(tokens) - 1):
             bigram = f"{tokens[i]} {tokens[i+1]}"
             self._pattern_frequencies[bigram] = (
@@ -1498,9 +1389,6 @@ class HierarchicalMneme:
         return mneme
 
 
-@dataclass
-class ConsolidationReport:
-    """Detailed report of a consolidation cycle."""
 @dataclass
 class ConsolidationReport:
     """Detailed report of a consolidation cycle."""

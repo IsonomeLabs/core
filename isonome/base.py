@@ -12,7 +12,6 @@ from __future__ import annotations
 import abc
 import logging
 import math
-from typing import Sequence
 
 from isonome.types import (
     AgentState,

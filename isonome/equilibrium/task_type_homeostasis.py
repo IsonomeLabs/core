@@ -44,9 +44,7 @@ Theoretical foundation:
 
 from __future__ import annotations
 
-import json
 import logging
-import math
 from typing import Any
 
 import numpy as np
@@ -456,12 +454,12 @@ class TaskTypeHomeostasis:
             return 0.0
 
         c = np.array(current_vec)
-        l = np.array(learned_vec)
+        lv = np.array(learned_vec)
         norm_c = np.linalg.norm(c)
-        norm_l = np.linalg.norm(l)
+        norm_l = np.linalg.norm(lv)
         if norm_c == 0 or norm_l == 0:
             return 0.0
-        return float(np.dot(c, l) / (norm_c * norm_l))
+        return float(np.dot(c, lv) / (norm_c * norm_l))
 
     # ── Statistics ──────────────────────────────────────────────────
 

@@ -12,7 +12,6 @@ Tick enforces the one-frame delay invariant:
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 import time
 from typing import Optional
@@ -21,12 +20,10 @@ from isonome.core.config import AppConfig
 from isonome.core.safety import AgentMode, EmergencyStop, SafetyGovernor
 from isonome.core.state import (
     CanonicalActionChunk,
-    CortexAdvice,
     CorrectedMotorCommand,
     ExecutionResult,
     RawSensorState,
 )
-from isonome.core.layers.base import LayerBase
 from isonome.core.layers.soma import SomaLayer
 from isonome.core.layers.jepa import JEPALayer
 from isonome.core.layers.cortex import CortexLayer

@@ -7,21 +7,21 @@ building consistent audit trails.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from abc import ABC, abstractmethod  # noqa: F401 — re-exports
+from dataclasses import dataclass, field  # noqa: F401 — re-exports
 from datetime import datetime, timezone
-from enum import Enum, StrEnum
+from enum import Enum, StrEnum  # noqa: F401 — Enum re-export
 from typing import (
     Any,
-    Callable,
-    Generic,
-    Literal,
+    Callable,  # noqa: F401
+    Generic,  # noqa: F401
+    Literal,  # noqa: F401
     Mapping,
-    MutableMapping,
+    MutableMapping,  # noqa: F401
     Protocol,
     Sequence,
     TypeAlias,
-    TypeVar,
+    TypeVar,  # noqa: F401
 )
 from uuid import UUID, uuid4
 

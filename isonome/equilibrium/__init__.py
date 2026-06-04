@@ -17,19 +17,18 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from isonome.types import (
-    AgentState,
-    EquilibriumError,
+    AgentState as AgentState,
+    EquilibriumError as EquilibriumError,
     Feedback,
     Pillar,
     TensionAxis,
     TensionID,
-    TensionOscillationError,
+    TensionOscillationError as TensionOscillationError,
     TensionSnapshot,
-    now,
+    now as now,
 )
 
 
@@ -724,10 +723,6 @@ class EquilibriumEngine:
     def total_oscillation_events(self) -> int:
         return self._oscillation_events
 
-    @property
-    def adaptive_damping(self) -> AdaptiveDampingController | None:
-        """The adaptive damping controller, or None if not enabled."""
-        return self._adaptive_damping
 
     def snapshot(self, agent_id=None, trigger=None) -> TensionSnapshot:
         """Capture the current tension state."""

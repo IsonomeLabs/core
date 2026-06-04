@@ -197,7 +197,7 @@ class PraxisPillar(BasePillar):
         """Serialize execution state for cross-session persistence."""
         if self.orchestrator is not None:
             try:
-                state = self.orchestrator.to_dict()
+                self.orchestrator.to_dict()  # validate serialization works
                 total = self.orchestrator.total_actions
                 completed = len(self.orchestrator.completed_actions)
                 logger.info(

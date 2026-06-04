@@ -33,10 +33,9 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
-import numpy as np
 
 from isonome.types import TensionID
 
@@ -1048,7 +1047,7 @@ class RecursiveReasoningEngine:
             # Complex question → break into factual sub-questions
             return [
                 f"Gather relevant information for: {hypothesis[:60]}",
-                f"Analyze and structure the information",
+                "Analyze and structure the information",
                 f"Produce final output for: {hypothesis[:60]}",
             ][:branching]
 
@@ -1435,6 +1434,73 @@ class RecursiveReasoningEngine:
         if not self._nodes:
             return 0
         return max(n.depth for n in self._nodes.values())
+
+    # ── Serialization ─────────────────────────────────────────────
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the reasoning engine state for cross-session persistence.
+
+        Saves the calibrator state, accumulated statistics, and tension
+        profile. Callable/computable fields (attention_system, decomposer_fn,
+        etc.) are not serialized — they must be re-provided on restoration.
+
+        Returns:
+            A JSON-serializable dict of all persistable engine state.
+        """
+        return {
+            "calibrator": self._calibrator.to_dict(),
+            "stats": {
+                "sessions": self._stats.sessions,
+                "total_nodes_created": self._stats.total_nodes_created,
+                "total_actions_produced": self._stats.total_actions_produced,
+                "total_branches_explored": self._stats.total_branches_explored,
+                "total_branches_pruned": self._stats.total_branches_pruned,
+                "total_evidence_points": self._stats.total_evidence_points,
+                "avg_plan_confidence": self._stats.avg_plan_confidence,
+                "avg_depth_reached": self._stats.avg_depth_reached,
+                "avg_duration_ms": self._stats.avg_duration_ms,
+            },
+            "tension_profile": dict(self._current_profile),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RecursiveReasoningEngine:
+        """Deserialize reasoning engine state.
+
+        Reconstructs the calibrator with full calibration history and
+        restores accumulated statistics. Callable hooks (attention_system,
+        decomposer_fn, etc.) must be re-bound after restoration.
+
+        Args:
+            data: A dict produced by to_dict().
+
+        Returns:
+            A reconstructed RecursiveReasoningEngine.
+        """
+        # Restore calibrator
+        cal_data = data.get("calibrator", {})
+        calibrator = ConfidenceCalibrator.from_dict(cal_data)
+
+        engine = cls(calibrator=calibrator)
+
+        # Restore stats
+        stats_data = data.get("stats", {})
+        engine._stats.sessions = int(stats_data.get("sessions", 0))
+        engine._stats.total_nodes_created = int(stats_data.get("total_nodes_created", 0))
+        engine._stats.total_actions_produced = int(stats_data.get("total_actions_produced", 0))
+        engine._stats.total_branches_explored = int(stats_data.get("total_branches_explored", 0))
+        engine._stats.total_branches_pruned = int(stats_data.get("total_branches_pruned", 0))
+        engine._stats.total_evidence_points = int(stats_data.get("total_evidence_points", 0))
+        engine._stats.avg_plan_confidence = float(stats_data.get("avg_plan_confidence", 0.0))
+        engine._stats.avg_depth_reached = float(stats_data.get("avg_depth_reached", 0.0))
+        engine._stats.avg_duration_ms = float(stats_data.get("avg_duration_ms", 0.0))
+
+        # Restore tension profile
+        profile_data = data.get("tension_profile", {})
+        if profile_data:
+            engine._current_profile = dict(profile_data)
+
+        return engine
 
     @staticmethod
     def best_confidence(confidences: list[float]) -> float:

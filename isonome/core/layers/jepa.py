@@ -5,7 +5,6 @@ frozen generalist brain. This layer loads the model and runs inference.
 """
 from __future__ import annotations
 
-import logging
 from enum import Enum
 from typing import Any, List, Optional
 

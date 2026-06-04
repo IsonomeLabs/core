@@ -10,7 +10,6 @@ Integrates the memory system into the agent lifecycle:
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from isonome.base import BasePillar
 from isonome.mneme.hierarchical import HierarchicalMneme

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import signal
-import sys
 from pathlib import Path
 from isonome.core.config import AppConfig
 from isonome.core.agent import Agent

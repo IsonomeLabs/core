@@ -475,7 +475,7 @@ class IsonomeAgent:
         from uuid import UUID
 
         from isonome import SERIALIZATION_SCHEMA_VERSION
-        from isonome.types import AgentIdentity, Task, TaskComplexity, TaskStatus
+        from isonome.types import AgentIdentity, Task, TaskComplexity
 
         # Schema version validation
         saved_version = data.get("schema_version", 0)

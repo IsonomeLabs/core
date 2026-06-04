@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import logging
 import time
 from isonome.core.state import MotorCommand
 from isonome.utils.logging import get_layer_logger

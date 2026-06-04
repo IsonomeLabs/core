@@ -7,7 +7,6 @@ Cortex does NOT touch motor commands. It only produces text advice for JEPA.
 """
 from __future__ import annotations
 
-import logging
 from typing import List
 
 from isonome.core.layers.base import LayerBase

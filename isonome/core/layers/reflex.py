@@ -4,7 +4,6 @@ Orchestrates: interpolate → enforce → execute at control frequency.
 """
 from __future__ import annotations
 
-import logging
 from typing import Iterator, List
 
 import torch

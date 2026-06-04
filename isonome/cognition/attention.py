@@ -28,11 +28,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Sequence
 from uuid import UUID, uuid4
 
-import numpy as np
-from scipy.special import softmax  # type: ignore[import-untyped]
 
 from isonome.equilibrium import EquilibriumEngine
 from isonome.types import TensionID

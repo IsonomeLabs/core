@@ -31,31 +31,4 @@ from isonome.core.safety import AgentMode
 from isonome.core.agent import Agent
 from isonome.core.app import IsonomeApp
 
-__all__ = [
-    "Agent",
-    "IsonomeApp",
-    "AppConfig",
-    "AgentMode",
-    # v0.2 state models
-    "RawSensorState",
-    "CanonicalActionChunk",
-    "CorrectedMotorCommand",
-    "CortexAdvice",
-    "ExecutionResult",
-    "Discrepancy",
-    "JointLimits",
-    "MotorCommandChunk",
-    "MotorCommand",
-    "SafeMotorCommand",
-    # v0.1 legacy
-    "SensorState",
-    "Adjustment",
-    "WorldModel",
-    "Patch",
-    "PatchType",
-    "ErrorEvent",
-    "JointReading",
-    "ContactReading",
-    "IMUReading",
-    "PredictedState",
-]
+__all__ = ["annotations", "RawSensorState", "CanonicalActionChunk", "CorrectedMotorCommand", "CortexAdvice", "ExecutionResult", "Discrepancy", "JointLimits", "MotorCommandChunk", "MotorCommand", "SafeMotorCommand", "SensorState", "LegacyMotorCommand", "Adjustment", "WorldModel", "Patch", "PatchType", "ErrorEvent", "JointReading", "ContactReading", "IMUReading", "PredictedState", "AppConfig", "AgentMode", "Agent", "IsonomeApp"]

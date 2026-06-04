@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from isonome.core.state import CortexAdvice
 from isonome.utils.logging import get_layer_logger
 
