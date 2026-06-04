@@ -660,10 +660,120 @@ class TestActionOrchestratorSerialization:
         assert action.id in pillar2.orchestrator._completed
 
 
-    # ═══════════════════════════════════════════════════════════════════
-        # IsonomeAgent Serialization Tests (Integration)
-# ═══════════════════════════════════════════════════════════════════
 
+class TestCognitionPillarSerialization:
+    """Direct CognitionPillar serialize/restore round-trips."""
+
+    def test_empty_cognition_pillar_serialize_restore(self):
+        """Empty CognitionPillar survives serialize/restore."""
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = CognitionPillar(name="test-cog")
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        serialized = pillar.serialize()
+        assert serialized is not None
+
+        pillar2 = CognitionPillar(name="test-cog-2")
+        pillar2.restore(serialized)
+
+        assert pillar2.attention is not None
+        assert pillar2.reasoning is not None
+        assert pillar2._context_added == 0
+        assert pillar2._tasks_reasoned == 0
+
+    def test_cognition_pillar_counters_serialize_restore(self):
+        """CognitionPillar counters survive serialize/restore."""
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = CognitionPillar(name="test-cog")
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        pillar.add_context("some content")
+        pillar.add_context("more content")
+        pillar._tasks_reasoned = 5
+
+        serialized = pillar.serialize()
+        pillar2 = CognitionPillar(name="test-cog-2")
+        pillar2.restore(serialized)
+
+        assert pillar2._context_added == pillar._context_added
+        assert pillar2._tasks_reasoned == 5
+        assert pillar2._token_capacity == pillar._token_capacity
+
+    def test_cognition_pillar_calibrator_serialize_restore(self):
+        """Calibrator state survives CognitionPillar serialize/restore."""
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = CognitionPillar(name="test-cog")
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        cal = pillar.reasoning.calibrator
+        for i in range(25):
+            cal.record(0.6 + (i % 4) * 0.1, (i % 2) == 0)
+
+        serialized = pillar.serialize()
+        pillar2 = CognitionPillar(name="test-cog-2")
+        pillar2.restore(serialized)
+
+        restored_cal = pillar2.reasoning.calibrator
+        assert restored_cal.total_predictions == 25
+        assert restored_cal.compute_ece() == pytest.approx(cal.compute_ece(), abs=1e-6)
+
+    def test_cognition_pillar_attention_counters_serialize_restore(self):
+        """Attention GC counters survive CognitionPillar serialize/restore."""
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = CognitionPillar(name="test-cog")
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        for i in range(5):
+            pillar.add_context(f"content block {i} " * 1000)
+        pillar.attention.collect_garbage()
+
+        gc_cycles_before = pillar.attention._gc_cycles
+        pruned_before = pillar.attention._total_pruned
+
+        serialized = pillar.serialize()
+        pillar2 = CognitionPillar(name="test-cog-2")
+        pillar2.restore(serialized)
+
+        assert pillar2.attention._gc_cycles == gc_cycles_before
+        assert pillar2.attention._total_pruned == pruned_before
+
+    def test_cognition_pillar_config_serialize_restore(self):
+        """CognitionPillar config (auto_gc, gc_threshold) survives restore."""
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = CognitionPillar(
+            name="test-cog",
+            auto_gc=False,
+            gc_utilization_threshold=0.65,
+        )
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        serialized = pillar.serialize()
+        pillar2 = CognitionPillar(name="test-cog-2")
+        pillar2.restore(serialized)
+
+        assert pillar2._auto_gc is False
+        assert pillar2._gc_util_threshold == pytest.approx(0.65)
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# IsonomeAgent Serialization Tests (Integration)
+# ═══════════════════════════════════════════════════════════════════
 
 class TestIsonomeAgentSerialization:
     """Full-agent serialization round-trip."""
@@ -839,3 +949,442 @@ class TestJSONRoundTrip:
         restored = IsonomeAgent.from_dict(parsed)
 
         assert restored.identity.name == "json-agent"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Schema Version & Faithful Config Round-Trip Tests (Schema v1)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestSchemaVersioning:
+    """Schema version is included and validated across all serialization layers."""
+
+    def test_agent_to_dict_includes_schema_version(self):
+        """Agent-level serialization includes top-level schema_version."""
+        from isonome import SERIALIZATION_SCHEMA_VERSION
+
+        agent = IsonomeAgent(name="versioned")
+        data = agent.to_dict()
+        assert "schema_version" in data
+        assert data["schema_version"] == SERIALIZATION_SCHEMA_VERSION
+
+    def test_praxis_pillar_includes_schema_version(self):
+        """PraxisPillar.serialize() includes _schema_version."""
+        from isonome import SERIALIZATION_SCHEMA_VERSION
+        from isonome.praxis.pillar import PraxisPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = PraxisPillar(name="test-praxis")
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+        data = pillar.serialize()
+        assert data is not None
+        assert data["_schema_version"] == SERIALIZATION_SCHEMA_VERSION
+
+    def test_mneme_pillar_includes_schema_version(self):
+        """MnemePillar.serialize() includes _schema_version."""
+        from isonome import SERIALIZATION_SCHEMA_VERSION
+        from isonome.mneme.pillar import MnemePillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = MnemePillar(name="test-mneme")
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+        data = pillar.serialize()
+        assert data is not None
+        assert data["_schema_version"] == SERIALIZATION_SCHEMA_VERSION
+
+    def test_cognition_pillar_includes_schema_version(self):
+        """CognitionPillar.serialize() includes _schema_version."""
+        from isonome import SERIALIZATION_SCHEMA_VERSION
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = CognitionPillar(name="test-cog")
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+        data = pillar.serialize()
+        assert data is not None
+        assert data["_schema_version"] == SERIALIZATION_SCHEMA_VERSION
+
+    def test_backward_compat_no_schema_version(self):
+        """from_dict() handles data without schema_version (v0 format)."""
+        # Agent without schema_version key should still restore
+        agent_data = {
+            "agent": {"name": "old-format", "id": "00000000-0000-0000-0000-000000000001"},
+            "engine": EquilibriumEngine().to_dict(),
+        }
+        agent = IsonomeAgent.from_dict(agent_data)
+        assert agent.identity.name == "old-format"
+
+    def test_forward_schema_version_warns(self, caplog):
+        """from_dict() warns when data has a newer schema version."""
+        import logging
+
+        agent_data = IsonomeAgent(name="forward-test").to_dict()
+        agent_data["schema_version"] = 999  # Simulate future version
+
+        with caplog.at_level(logging.WARNING):
+            restored = IsonomeAgent.from_dict(agent_data)
+        assert restored.identity.name == "forward-test"
+        # Warning should have been logged about schema mismatch
+        assert any("schema" in msg.lower() or "999" in msg for msg in caplog.messages)
+
+
+class TestPraxisPillarConfigRoundTrip:
+    """PraxisPillar.serialize()/restore() faithfully preserves config."""
+
+    def test_max_parallel_survives_round_trip(self):
+        """Custom max_parallel should survive serialize/restore."""
+        from isonome.praxis.pillar import PraxisPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = PraxisPillar(name="parallel-test", max_parallel=4)
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        data = pillar.serialize()
+        assert data["_pillar_config"]["max_parallel"] == 4
+
+        pillar2 = PraxisPillar(name="parallel-test-2")
+        pillar2.restore(data)
+        assert pillar2._max_parallel == 4
+        assert pillar2.orchestrator._max_parallel == 4
+
+    def test_retry_policy_survives_round_trip(self):
+        """Custom RetryPolicy should survive serialize/restore."""
+        from isonome.praxis.pillar import PraxisPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        custom_retry = RetryPolicy(max_retries=5, base_delay=2.0, backoff_factor=3.0, max_delay=600.0)
+        pillar = PraxisPillar(name="retry-test", default_retry_policy=custom_retry)
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        data = pillar.serialize()
+        rp_data = data["_pillar_config"]["default_retry_policy"]
+        assert rp_data["max_retries"] == 5
+        assert rp_data["base_delay"] == 2.0
+        assert rp_data["backoff_factor"] == 3.0
+        assert rp_data["max_delay"] == 600.0
+
+        pillar2 = PraxisPillar(name="retry-test-2")
+        pillar2.restore(data)
+        assert pillar2._default_retry is not None
+        assert pillar2._default_retry.max_retries == 5
+        assert pillar2._default_retry.base_delay == 2.0
+
+    def test_pillar_name_survives_round_trip(self):
+        """Custom pillar name should survive serialize/restore."""
+        from isonome.praxis.pillar import PraxisPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = PraxisPillar(name="my-custom-executor")
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        data = pillar.serialize()
+        assert data["_pillar_config"]["name"] == "my-custom-executor"
+
+        pillar2 = PraxisPillar(name="default-name")
+        pillar2.restore(data)
+        assert pillar2.name == "my-custom-executor"
+
+    def test_callable_presence_flags(self):
+        """serialize() records whether callables were present."""
+        from isonome.praxis.pillar import PraxisPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = PraxisPillar(
+            name="flags-test",
+            executor_fn=lambda a: None,
+        )
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        data = pillar.serialize()
+        config = data["_pillar_config"]
+        assert config["has_executor_fn"] is True
+        assert config["has_validator_fn"] is False
+        assert config["has_approve_fn"] is False
+
+    def test_praxis_agent_level_round_trip_with_config(self):
+        """PraxisPillar config should survive full agent-level round-trip."""
+        from isonome.praxis.pillar import PraxisPillar
+
+        custom_retry = RetryPolicy(max_retries=7, base_delay=3.0, backoff_factor=2.5, max_delay=500.0)
+        praxis = PraxisPillar(name="my-executor", max_parallel=3, default_retry_policy=custom_retry)
+        agent = IsonomeAgent(name="praxis-config-test", praxis=praxis)
+        agent.start()
+
+        data = agent.to_dict()
+        restored = IsonomeAgent.from_dict(data)
+
+        assert restored._praxis is not None
+        assert restored._praxis._max_parallel == 3
+        assert restored._praxis._default_retry is not None
+        assert restored._praxis._default_retry.max_retries == 7
+        assert restored._praxis._default_retry.base_delay == 3.0
+        assert restored._praxis.name == "my-executor"
+
+
+class TestMnemePillarConfigRoundTrip:
+    """MnemePillar.serialize()/restore() faithfully preserves config."""
+
+    def test_consolidation_significance_survives_round_trip(self):
+        """Custom consolidation_significance should survive serialize/restore."""
+        from isonome.mneme.pillar import MnemePillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = MnemePillar(name="cons-test", consolidation_significance=0.7)
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        data = pillar.serialize()
+        assert data["_pillar_config"]["consolidation_significance"] == 0.7
+
+        pillar2 = MnemePillar(name="cons-test-2")
+        pillar2.restore(data)
+        assert pillar2._cons_sig == 0.7
+        assert pillar2.mneme._consolidation_significance == 0.7
+
+    def test_promotion_significance_survives_round_trip(self):
+        """Custom promotion_significance should survive serialize/restore."""
+        from isonome.mneme.pillar import MnemePillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = MnemePillar(name="prom-test", promotion_significance=0.85)
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        data = pillar.serialize()
+        assert data["_pillar_config"]["promotion_significance"] == 0.85
+
+        pillar2 = MnemePillar(name="prom-test-2")
+        pillar2.restore(data)
+        assert pillar2._prom_sig == 0.85
+        assert pillar2.mneme._promotion_significance == 0.85
+
+    def test_pillar_name_survives_round_trip(self):
+        """Custom pillar name should survive serialize/restore."""
+        from isonome.mneme.pillar import MnemePillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = MnemePillar(name="my-custom-memory")
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        data = pillar.serialize()
+        assert data["_pillar_config"]["name"] == "my-custom-memory"
+
+        pillar2 = MnemePillar(name="default-name")
+        pillar2.restore(data)
+        assert pillar2.name == "my-custom-memory"
+
+    def test_mneme_agent_level_round_trip_with_config(self):
+        """MnemePillar config should survive full agent-level round-trip."""
+        from isonome.mneme.pillar import MnemePillar
+
+        mneme = MnemePillar(name="my-memory", consolidation_significance=0.6, promotion_significance=0.9)
+        agent = IsonomeAgent(name="mneme-config-test", mneme=mneme)
+        agent.start()
+
+        data = agent.to_dict()
+        restored = IsonomeAgent.from_dict(data)
+
+        assert restored._mneme is not None
+        assert restored._mneme._cons_sig == 0.6
+        assert restored._mneme._prom_sig == 0.9
+        assert restored._mneme.name == "my-memory"
+
+
+class TestCognitionPillarConfigRoundTrip:
+    """CognitionPillar.serialize()/restore() faithfully preserves config."""
+
+    def test_pillar_name_survives_round_trip(self):
+        """Custom pillar name should survive serialize/restore."""
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = CognitionPillar(name="my-custom-thinker")
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        data = pillar.serialize()
+        assert data["_pillar_config"]["name"] == "my-custom-thinker"
+
+        pillar2 = CognitionPillar(name="default-name")
+        pillar2.restore(data)
+        assert pillar2.name == "my-custom-thinker"
+
+    def test_callable_presence_flags(self):
+        """serialize() records whether decomposer/evidence fns were present."""
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.types import AgentIdentity, AgentState
+
+        pillar = CognitionPillar(
+            name="flags-test",
+            decomposer_fn=lambda t: [],
+        )
+        state = AgentState(identity=AgentIdentity(name="test"))
+        pillar.initialize(state)
+
+        data = pillar.serialize()
+        config = data["_pillar_config"]
+        assert config["has_decomposer_fn"] is True
+        assert config["has_evidence_fn"] is False
+
+
+class TestEngineBindingAfterRestore:
+    """Restored pillars should be bound to the restored engine for auto-sync."""
+
+    def test_pillars_bound_to_restored_engine(self):
+        """All restored pillars should be engine-bound after from_dict()."""
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.praxis.pillar import PraxisPillar
+        from isonome.mneme.pillar import MnemePillar
+
+        agent = IsonomeAgent(
+            name="binding-test",
+            cognition=CognitionPillar(name="thinker"),
+            praxis=PraxisPillar(name="executor"),
+            mneme=MnemePillar(name="memory"),
+        )
+        agent.start()
+
+        data = agent.to_dict()
+        restored = IsonomeAgent.from_dict(data)
+
+        # All restored pillars should be bound to the engine
+        for pillar in restored._pillar_map.values():
+            assert pillar._engine is not None
+            assert pillar._engine is restored.engine
+
+    def test_restored_pillars_have_equilibrium_view(self):
+        """Restored pillars should have equilibrium views (from bind_engine)."""
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.praxis.pillar import PraxisPillar
+        from isonome.mneme.pillar import MnemePillar
+
+        agent = IsonomeAgent(
+            name="view-test",
+            cognition=CognitionPillar(name="thinker"),
+            praxis=PraxisPillar(name="executor"),
+            mneme=MnemePillar(name="memory"),
+        )
+        agent.start()
+
+        data = agent.to_dict()
+        restored = IsonomeAgent.from_dict(data)
+
+        for pillar in restored._pillar_map.values():
+            assert pillar._equilibrium_view is not None
+
+    def test_restored_agent_can_tick(self):
+        """A fully restored agent should be able to tick without errors."""
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.praxis.pillar import PraxisPillar
+        from isonome.mneme.pillar import MnemePillar
+
+        agent = IsonomeAgent(
+            name="tick-test",
+            cognition=CognitionPillar(name="thinker"),
+            praxis=PraxisPillar(name="executor"),
+            mneme=MnemePillar(name="memory"),
+        )
+        agent.start()
+        agent.submit_task(Task(description="test task", complexity=TaskComplexity.SIMPLE))
+
+        data = agent.to_dict()
+        restored = IsonomeAgent.from_dict(data)
+
+        # Ticking a restored agent should not raise
+        snapshot = restored.tick()
+        assert snapshot is not None
+
+
+class TestFullAgentFaithfulRoundTrip:
+    """End-to-end: agent with all three pillars and config round-trips faithfully."""
+
+    def test_three_pillar_agent_round_trip(self):
+        """Agent with all 3 pillars preserves identity, engine, config, queue."""
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.praxis.pillar import PraxisPillar
+        from isonome.mneme.pillar import MnemePillar
+
+        custom_retry = RetryPolicy(max_retries=5, base_delay=2.5, backoff_factor=1.5, max_delay=120.0)
+        agent = IsonomeAgent(
+            name="full-faithful",
+            cognition=CognitionPillar(name="deep-thinker", token_capacity=256_000),
+            praxis=PraxisPillar(name="safe-executor", max_parallel=2, default_retry_policy=custom_retry),
+            mneme=MnemePillar(name="vivid-memory", consolidation_significance=0.75, promotion_significance=0.85),
+        )
+        agent.start()
+        agent.submit_task(Task(description="complex analysis", complexity=TaskComplexity.COMPLEX))
+        agent.tick()
+
+        data = agent.to_dict()
+        restored = IsonomeAgent.from_dict(data)
+
+        # Identity
+        assert restored.identity.name == "full-faithful"
+        assert restored.identity.id == agent.identity.id
+
+        # Counters
+        assert restored._tick_count == 1
+        assert restored._signals_sent == agent._signals_sent
+
+        # Engine
+        assert len(restored.engine.axes) == len(agent.engine.axes)
+
+        # Cognition config
+        assert restored._cognition is not None
+        assert restored._cognition.name == "deep-thinker"
+        assert restored._cognition._token_capacity == 256_000
+
+        # Praxis config
+        assert restored._praxis is not None
+        assert restored._praxis.name == "safe-executor"
+        assert restored._praxis._max_parallel == 2
+        assert restored._praxis._default_retry.max_retries == 5
+        assert restored._praxis._default_retry.base_delay == 2.5
+
+        # Mneme config
+        assert restored._mneme is not None
+        assert restored._mneme.name == "vivid-memory"
+        assert restored._mneme._cons_sig == 0.75
+        assert restored._mneme._prom_sig == 0.85
+
+        # Task queue
+        assert len(restored._task_queue) == 1
+
+        # Engine binding
+        for p in restored._pillar_map.values():
+            assert p._engine is restored.engine
+
+    def test_three_pillar_agent_json_round_trip(self):
+        """Full agent with config through json.dumps/loads."""
+        import json
+
+        from isonome.cognition.pillar import CognitionPillar
+        from isonome.praxis.pillar import PraxisPillar
+        from isonome.mneme.pillar import MnemePillar
+
+        custom_retry = RetryPolicy(max_retries=10, base_delay=0.5, backoff_factor=1.0, max_delay=60.0)
+        agent = IsonomeAgent(
+            name="json-faithful",
+            cognition=CognitionPillar(name="thinker"),
+            praxis=PraxisPillar(name="executor", max_parallel=4, default_retry_policy=custom_retry),
+            mneme=MnemePillar(name="memory", consolidation_significance=0.8),
+        )
+        agent.start()
+
+        data = agent.to_dict()
+        raw_json = json.dumps(data, default=str)
+        parsed = json.loads(raw_json)
+        restored = IsonomeAgent.from_dict(parsed)
+
+        assert restored.identity.name == "json-faithful"
+        assert restored._praxis._max_parallel == 4
+        assert restored._praxis._default_retry.max_retries == 10
+        assert restored._mneme._cons_sig == 0.8
