@@ -180,20 +180,13 @@ class PraxisPillar(BasePillar):
             elif kind == "cancel_action":
                 from uuid import UUID
                 action_id = UUID(payload.get("action_id", ""))
-                if action_id in self.orchestrator.action_states:
-                    self.orchestrator._states[action_id] = ActionState.CANCELLED
+                if self.orchestrator.cancel_action(action_id):
                     logger.info(f"{self.name}: cancelled action {action_id}")
+                else:
+                    logger.warning(f"{self.name}: could not cancel action {action_id}")
 
             elif kind == "cancel_all":
-                count = 0
-                for aid, state in self.orchestrator.action_states.items():
-                    if state not in (
-                        ActionState.COMPLETED,
-                        ActionState.FAILED,
-                        ActionState.CANCELLED,
-                    ):
-                        self.orchestrator._states[aid] = ActionState.CANCELLED
-                        count += 1
+                count = self.orchestrator.cancel_all()
                 logger.info(f"{self.name}: cancelled {count} actions")
 
             else:
