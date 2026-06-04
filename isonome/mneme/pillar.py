@@ -253,12 +253,58 @@ class MnemePillar(BasePillar):
             )
 
     def serialize(self) -> dict | None:
-        """Get the full serializable memory state."""
+        """Get the full serializable memory state.
+
+        Includes both the mneme system state and the pillar configuration
+        (consolidation_significance, promotion_significance, pillar name)
+        so that restore() can faithfully reconstruct the full pillar.
+        """
         if self.mneme is None:
             return None
-        return self.mneme.to_dict()
+
+        from isonome import SERIALIZATION_SCHEMA_VERSION
+
+        result = self.mneme.to_dict()
+        # Layer pillar config on top of mneme state
+        result["_pillar_config"] = {
+            "name": self.name,
+            "consolidation_significance": self._cons_sig,
+            "promotion_significance": self._prom_sig,
+        }
+        result["_schema_version"] = SERIALIZATION_SCHEMA_VERSION
+        return result
 
     def restore(self, data: dict) -> None:
-        """Restore memory from serialized state."""
+        """Restore memory from serialized data.
+
+        Reconstructs both the HierarchicalMneme and the pillar's config
+        parameters (consolidation/promotion significance thresholds).
+        """
+        from isonome import SERIALIZATION_SCHEMA_VERSION
+
+        # Validate schema version for forward-compat detection
+        saved_version = data.get("_schema_version", 0)
+        if saved_version > SERIALIZATION_SCHEMA_VERSION:
+            logger.warning(
+                f"{self.name}: serialized with schema v{saved_version}, "
+                f"current is v{SERIALIZATION_SCHEMA_VERSION} — "
+                f"some fields may be ignored"
+            )
+
         self.mneme = HierarchicalMneme.from_dict(data)
+
+        # Restore pillar config if present (schema v1+)
+        config = data.get("_pillar_config", {})
+        if config:
+            self.name = config.get("name", self.name)
+            cons_sig = config.get("consolidation_significance")
+            prom_sig = config.get("promotion_significance")
+            # Apply restored thresholds to the reconstructed mneme
+            if cons_sig is not None and self.mneme is not None:
+                self._cons_sig = float(cons_sig)
+                self.mneme._consolidation_significance = self._cons_sig
+            if prom_sig is not None and self.mneme is not None:
+                self._prom_sig = float(prom_sig)
+                self.mneme._promotion_significance = self._prom_sig
+
         logger.info(f"{self.name}: restored {self.mneme.total_memories} memories")

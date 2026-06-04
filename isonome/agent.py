@@ -384,10 +384,17 @@ class IsonomeAgent:
         pillar states (if available), task queue, and statistics.
         The agent can be reconstructed with identical state.
 
+        Schema version is included for forward/backward compatibility —
+        from_dict() uses it to detect and gracefully handle format
+        changes across releases.
+
         Returns:
             A JSON-serializable dict of the entire agent state.
         """
+        from isonome import SERIALIZATION_SCHEMA_VERSION
+
         result: dict[str, Any] = {
+            "schema_version": SERIALIZATION_SCHEMA_VERSION,
             "agent": {
                 "name": self.identity.name,
                 "id": str(self.identity.id),
@@ -402,7 +409,8 @@ class IsonomeAgent:
             "feedback_applied": self._feedback_applied,
         }
 
-        # Serialize pillar states
+        # Serialize pillar states (each includes its own _pillar_config
+        # with name, config params, and callable presence flags)
         if self._cognition is not None:
             result["cognition"] = self._cognition.serialize()
         if self._praxis is not None:
@@ -435,7 +443,28 @@ class IsonomeAgent:
 
         Reconstructs the agent with all three pillars and equilibrium
         engine in their saved state. Pillars are restored via their
-        restore() methods or from_serialize classmethods.
+        restore() methods:
+
+        - **CognitionPillar**: restore() reconstructs both Attention
+          and Reasoning subsystems, including calibrator state and
+          tension profiles.
+        - **PraxisPillar**: restore() reconstructs the
+          ActionOrchestrator from its serialized state, including
+          pillar config (max_parallel, retry policy).
+        - **MnemePillar**: restore() reconstructs the
+          HierarchicalMneme from its serialized state, including
+          consolidation/promotion thresholds.
+
+        After pillar restoration, the pillar_map and internal
+        references (_cognition, _praxis, _mneme) are re-wired so
+        the agent is fully operational. Restored pillars are bound
+        to the restored equilibrium engine for auto-sync.
+
+        Schema version validation: if the saved data has a newer
+        schema version than the current code, a warning is logged
+        but deserialization still proceeds (best-effort forward
+        compatibility). Data from older schemas is accepted
+        silently — missing fields fall back to defaults.
 
         Args:
             data: A dict produced by to_dict().
@@ -445,7 +474,17 @@ class IsonomeAgent:
         """
         from uuid import UUID
 
+        from isonome import SERIALIZATION_SCHEMA_VERSION
         from isonome.types import AgentIdentity, Task, TaskComplexity, TaskStatus
+
+        # Schema version validation
+        saved_version = data.get("schema_version", 0)
+        if saved_version > SERIALIZATION_SCHEMA_VERSION:
+            logger.warning(
+                f"Deserializing schema v{saved_version} data with "
+                f"v{SERIALIZATION_SCHEMA_VERSION} code — some fields "
+                f"may be ignored. Consider upgrading isonome."
+            )
 
         agent_data = data.get("agent", {})
 
@@ -479,10 +518,58 @@ class IsonomeAgent:
         agent._signals_sent = int(data.get("signals_sent", 0))
         agent._feedback_applied = int(data.get("feedback_applied", 0))
 
-        # Restore calibrator (persisted separately for pillar wiring)
-        # Calibrator is restored by the CognitionPillar if it has
-        # a reasoning engine. This top-level method handles the
-        # case where no pillars were serialized.
+        # ── Restore pillars ──────────────────────────────────────────
+        # Each pillar is reconstructed and restored from its serialized
+        # data, then re-registered in the pillar map.
+        # Pillar names are read from the serialized _pillar_config
+        # (schema v1+) so custom names survive round-trips.
+
+        # Cognition pillar
+        cog_data = data.get("cognition")
+        if cog_data is not None:
+            from isonome.cognition.pillar import CognitionPillar
+            cog = CognitionPillar(
+                name="thinker",
+                engine=agent.engine,
+                token_capacity=int(cog_data.get("token_capacity", 128_000)),
+                compress_ratio=float(cog_data.get("compress_ratio", 0.20)),
+                auto_gc=bool(cog_data.get("auto_gc", True)),
+                gc_utilization_threshold=float(cog_data.get("gc_utilization_threshold", 0.80)),
+            )
+
+            cog.restore(cog_data)
+            agent._cognition = cog
+            agent._pillar_map[Pillar.COGNITION] = cog
+
+        # Praxis pillar
+        praxis_data = data.get("praxis")
+        if praxis_data is not None:
+            from isonome.praxis.pillar import PraxisPillar
+            praxis = PraxisPillar(name="executor")
+            praxis.restore(praxis_data)
+            agent._praxis = praxis
+            agent._pillar_map[Pillar.PRAXIS] = praxis
+
+        # Mneme pillar
+        mneme_data = data.get("mneme")
+        if mneme_data is not None:
+            from isonome.mneme.pillar import MnemePillar
+            mneme = MnemePillar(name="memory")
+            mneme.restore(mneme_data)
+            agent._mneme = mneme
+            agent._pillar_map[Pillar.MNEME] = mneme
+
+        # ── Post-restore wiring ──────────────────────────────────────
+
+        # Re-wire cross-pillar references after all pillars are restored
+        if agent._cognition is not None and agent._mneme is not None:
+            agent._cognition._engine = agent.engine
+            agent._cognition._mneme_pillar = agent._mneme
+
+        # Bind all restored pillars to the restored engine so they
+        # receive auto-sync equilibrium views on each process_queued()
+        for pillar in agent._pillar_map.values():
+            pillar.bind_engine(agent.engine)
 
         # Restore task queue
         for t_data in data.get("task_queue", []):
@@ -498,7 +585,6 @@ class IsonomeAgent:
                 pass
 
         return agent
-
     @property
     def stats(self) -> dict:
         return {

@@ -25,7 +25,7 @@ from typing import Any
 
 from isonome.base import BasePillar
 from isonome.cognition.attention import AttentionEquilibriumSystem
-from isonome.cognition.reasoning import RecursiveReasoningEngine
+from isonome.cognition.reasoning import ConfidenceCalibrator, RecursiveReasoningEngine
 from isonome.equilibrium import EquilibriumEngine
 from isonome.types import (
     AgentState,
@@ -520,25 +520,159 @@ class CognitionPillar(BasePillar):
         return report
 
     def serialize(self) -> dict | None:
-        """Get the full serializable cognition state."""
+        """Get the full serializable cognition state.
+
+        Includes all data needed for a faithful round-trip restore().
+        The calibrator is serialized both at top-level (for
+        IsonomeAgent.to_dict compatibility) and nested under reasoning.
+        Pillar config (name, decomposer/evidence fn presence) is
+        included for schema v1+ so restore() can reconstruct faithfully.
+        """
+        from isonome import SERIALIZATION_SCHEMA_VERSION
+
         result: dict[str, Any] = {
             "context_added": self._context_added,
             "tasks_reasoned": self._tasks_reasoned,
             "token_capacity": self._token_capacity,
             "compress_ratio": self._compress_ratio,
+            "auto_gc": self._auto_gc,
+            "gc_utilization_threshold": self._gc_util_threshold,
+            "_pillar_config": {
+                "name": self.name,
+                "has_decomposer_fn": self._decomposer_fn is not None,
+                "has_evidence_fn": self._evidence_fn is not None,
+            },
+            "_schema_version": SERIALIZATION_SCHEMA_VERSION,
         }
         if self.attention is not None:
             result["attention"] = {
-                "token_capacity": self._token_capacity,
-                "stats": self.attention.stats,
-                "chunk_count": self.attention.chunk_count,
-                "budget_utilization": self.attention.budget.utilization,
+                "token_capacity": self.attention.budget.token_capacity,
+                "compress_ratio": self._compress_ratio,
+                "chunks_active": self.attention.chunk_count,
+                "gc_cycles": self.attention._gc_cycles,
+                "total_pruned": self.attention._total_pruned,
+                "total_compressed": self.attention._total_compressed,
+                "total_kept": self.attention._total_kept,
+                "calibration": {
+                    "ece": self.attention._calibration_ece,
+                    "bias": self.attention._calibration_bias,
+                    "overconfident": self.attention._calibration_overconfident,
+                    "underconfident": self.attention._calibration_underconfident,
+                    "predictions": self.attention._calibration_predictions,
+                    "active": self.attention._calibration_active,
+                },
             }
         if self.reasoning is not None:
-            result["reasoning"] = self.reasoning.stats
+            result["reasoning"] = {
+                "tension_profile": dict(self.reasoning._current_profile),
+            }
             # Include calibrator state
             result["calibrator"] = self.reasoning.calibrator.to_dict()
         return result
+
+    def restore(self, data: dict) -> None:
+        """Restore cognition state from serialized data.
+
+        Reconstructs both the Attention and Reasoning subsystems from
+        the data produced by serialize(), including calibrator state,
+        tension profiles, and attention statistics.
+
+        Schema version validation: if the saved data has a newer
+        schema version, a warning is logged. Older schemas are
+        accepted silently — missing fields fall back to defaults.
+
+        Args:
+            data: A dict produced by serialize().
+        """
+        from isonome import SERIALIZATION_SCHEMA_VERSION
+
+        # Validate schema version for forward-compat detection
+        saved_version = data.get("_schema_version", 0)
+        if saved_version > SERIALIZATION_SCHEMA_VERSION:
+            logger.warning(
+                f"{self.name}: serialized with schema v{saved_version}, "
+                f"current is v{SERIALIZATION_SCHEMA_VERSION} — "
+                f"some fields may be ignored"
+            )
+
+        # Restore pillar config if present (schema v1+)
+        config = data.get("_pillar_config", {})
+        if config:
+            self.name = config.get("name", self.name)
+
+        # Restore scalar state
+        self._context_added = int(data.get("context_added", 0))
+        self._tasks_reasoned = int(data.get("tasks_reasoned", 0))
+        self._token_capacity = int(data.get("token_capacity", 128_000))
+        self._compress_ratio = float(data.get("compress_ratio", 0.20))
+        self._auto_gc = bool(data.get("auto_gc", True))
+        self._gc_util_threshold = float(data.get("gc_utilization_threshold", 0.80))
+
+        # Restore calibrator first — it's needed by both subsystems
+        calibrator = None
+        cal_data = data.get("calibrator")
+        if cal_data is not None:
+            calibrator = ConfidenceCalibrator.from_dict(cal_data)
+
+        # Reconstruct attention system
+        attn_data = data.get("attention")
+        if attn_data is not None:
+            engine = self._engine
+            if engine is None:
+                from isonome.equilibrium import EquilibriumEngine
+                engine = EquilibriumEngine()
+
+            self.attention = AttentionEquilibriumSystem(
+                engine=engine,
+                token_capacity=int(attn_data.get("token_capacity", self._token_capacity)),
+                compress_ratio=float(attn_data.get("compress_ratio", self._compress_ratio)),
+            )
+            # Restore attention counters
+            self.attention._gc_cycles = int(attn_data.get("gc_cycles", 0))
+            self.attention._total_pruned = int(attn_data.get("total_pruned", 0))
+            self.attention._total_compressed = int(attn_data.get("total_compressed", 0))
+            self.attention._total_kept = int(attn_data.get("total_kept", 0))
+
+            # Restore calibration state
+            cal_state = attn_data.get("calibration")
+            if cal_state is not None:
+                self.attention._calibration_ece = float(cal_state.get("ece", 0.0))
+                self.attention._calibration_bias = float(cal_state.get("bias", 0.0))
+                self.attention._calibration_overconfident = bool(cal_state.get("overconfident", False))
+                self.attention._calibration_underconfident = bool(cal_state.get("underconfident", False))
+                self.attention._calibration_predictions = int(cal_state.get("predictions", 0))
+                self.attention._calibration_active = bool(cal_state.get("active", False))
+
+        # Reconstruct reasoning system
+        reas_data = data.get("reasoning")
+        if reas_data is not None:
+            self.reasoning = RecursiveReasoningEngine(
+                attention_system=self.attention,
+                decomposer_fn=self._decomposer_fn,
+                evidence_fn=self._evidence_fn,
+                calibrator=calibrator,
+            )
+            # Restore tension profile
+            profile = reas_data.get("tension_profile")
+            if profile is not None:
+                self.reasoning._current_profile = dict(profile)
+        elif calibrator is not None:
+            # No reasoning data but have calibrator — rebuild reasoning
+            # and attach the restored calibrator
+            self.reasoning = RecursiveReasoningEngine(
+                attention_system=self.attention,
+                decomposer_fn=self._decomposer_fn,
+                evidence_fn=self._evidence_fn,
+                calibrator=calibrator,
+            )
+
+        logger.info(
+            f"{self.name}: restored cognition — "
+            f"context_added={self._context_added}, "
+            f"tasks_reasoned={self._tasks_reasoned}, "
+            f"attention={'yes' if self.attention else 'no'}, "
+            f"reasoning={'yes' if self.reasoning else 'no'}"
+        )
 
     # ── Properties ──────────────────────────────────────────────────
 

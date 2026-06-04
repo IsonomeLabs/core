@@ -375,14 +375,86 @@ class PraxisPillar(BasePillar):
         return self.orchestrator.export_to_mneme()
 
     def serialize(self) -> dict | None:
-        """Get the full serializable execution state."""
+        """Get the full serializable execution state.
+
+        Includes both the orchestrator state and the pillar configuration
+        (max_parallel, default_retry_policy, calibrator reference) so that
+        restore() can faithfully reconstruct the full pillar.
+        """
         if self.orchestrator is None:
             return None
-        return self.orchestrator.to_dict()
+
+        from isonome import SERIALIZATION_SCHEMA_VERSION
+
+        result = self.orchestrator.to_dict()
+        # Layer pillar config on top of orchestrator state
+        result["_pillar_config"] = {
+            "name": self.name,
+            "max_parallel": self._max_parallel,
+            "has_executor_fn": self._executor_fn is not None,
+            "has_validator_fn": self._validator_fn is not None,
+            "has_approve_fn": self._approve_fn is not None,
+            "default_retry_policy": (
+                {
+                    "max_retries": self._default_retry.max_retries,
+                    "base_delay": self._default_retry.base_delay,
+                    "backoff_factor": self._default_retry.backoff_factor,
+                    "max_delay": self._default_retry.max_delay,
+                }
+                if self._default_retry is not None
+                else None
+            ),
+        }
+        result["_schema_version"] = SERIALIZATION_SCHEMA_VERSION
+        return result
 
     def restore(self, data: dict) -> None:
-        """Restore execution state from serialized data."""
+        """Restore execution state from serialized data.
+
+        Reconstructs both the ActionOrchestrator and the pillar's config
+        parameters (max_parallel, default_retry_policy). Executor/validator/
+        approve callables cannot be serialized — the caller must re-wire
+        them after restore().
+        """
+        from isonome import SERIALIZATION_SCHEMA_VERSION
+
+        # Validate schema version for forward-compat detection
+        saved_version = data.get("_schema_version", 0)
+        if saved_version > SERIALIZATION_SCHEMA_VERSION:
+            logger.warning(
+                f"{self.name}: serialized with schema v{saved_version}, "
+                f"current is v{SERIALIZATION_SCHEMA_VERSION} — "
+                f"some fields may be ignored"
+            )
+
         self.orchestrator = ActionOrchestrator.from_dict(data)
+
+        # Restore pillar config if present (schema v1+)
+        config = data.get("_pillar_config", {})
+        if config:
+            self.name = config.get("name", self.name)
+            self._max_parallel = int(config.get("max_parallel", self._max_parallel))
+            # Restore retry policy from pillar config (preferred)
+            # or fall back to orchestrator-level data
+            retry_data = config.get("default_retry_policy")
+            if retry_data is not None:
+                self._default_retry = RetryPolicy(
+                    max_retries=retry_data.get("max_retries", 3),
+                    base_delay=retry_data.get("base_delay", 1.0),
+                    backoff_factor=retry_data.get("backoff_factor", 2.0),
+                    max_delay=retry_data.get("max_delay", 300.0),
+                )
+            # Sync max_parallel to the orchestrator
+            if self.orchestrator is not None:
+                self.orchestrator._max_parallel = self._max_parallel
+
+        # Callables cannot be serialized — log a reminder
+        if config.get("has_executor_fn"):
+            logger.info(
+                f"{self.name}: executor_fn was present at serialize time; "
+                f"re-wire with set_executor_fn() after restore"
+            )
+
         logger.info(
             f"{self.name}: restored {self.orchestrator.total_actions} actions"
         )
