@@ -266,6 +266,240 @@ class MnemeStats:
         }
 
 
+
+
+# =====================================================================
+# Rehearsal Scheduling (iter-018)
+# =====================================================================
+
+
+class RehearsalScheduler:
+    """Calibration-aware rehearsal scheduling -- determines WHEN to rehearse.
+
+    Extends the iter-010 calibration-gated rehearsal (which controls HOW MUCH
+    boost to apply) with optimal scheduling of rehearsal timing. The key insight
+    from spaced repetition research: the interval between rehearsals should grow
+    with each successful recall, but calibration errors distort the system's
+    assessment of which memories are safe vs at risk.
+
+    Three calibration modes control interval computation:
+    - Well-calibrated (ECE <= 0.05): Standard expanding intervals.
+      The system's significance judgments are reliable, so high-significance
+      entries get longer intervals (they are genuinely important and stable).
+    - Overconfident (ECE > 0.15, overconfident): Shortened intervals.
+      The system overestimates how well it knows things, so rehearse sooner
+      to catch decaying memories before they are lost.
+    - Underconfident (ECE > 0.15, underconfident): Extended intervals.
+      The system underestimates its knowledge, so give memories more time
+      before rehearsing -- they are more stable than the system thinks.
+
+    Tension modulation (multiplicative with calibration):
+    - consolidate_prune < 0 (Consolidate): intervals shortened (rehearse more
+      often to strengthen memories before consolidation).
+    - consolidate_prune > 0 (Prune): intervals extended (let weak memories
+      decay and be pruned naturally).
+    - specific_general: does not modulate rehearsal timing (it affects
+      content abstraction, not rehearsal frequency).
+
+    Mathematical foundation:
+      I_base = effective_half_life * significance_factor * rehearsal_expansion
+      I_cal  = I_base * (1 + calibration_modifier)
+      I_tens = I_cal * (1 + tension_modifier)
+      I_final = clamp(I_tens, MIN_INTERVAL, MAX_INTERVAL)
+
+    Where:
+      significance_factor = 1.0 / (0.5 + significance)  (higher sig -> longer)
+      rehearsal_expansion = 1.3 ^ rehearsal_count       (spacing effect)
+      calibration_modifier:
+        well-calibrated: +0.10 (slightly longer intervals -- trust stability)
+        overconfident:   -0.25 (shorter intervals -- catch decay early)
+        underconfident:  +0.20 (longer intervals -- trust stability more)
+        moderate:        0.00  (no correction)
+      tension_modifier = 0.15 * consolidate_prune_position
+
+    Minimum interval: 300s (5 min) -- avoid thrashing.
+    Maximum interval: 86400s (24h) -- rehearse at least daily for active entries.
+    """
+
+    MIN_INTERVAL: float = 300.0   # 5 minutes -- avoid rehearsal thrashing
+    MAX_INTERVAL: float = 86400.0 # 24 hours -- at least daily for active entries
+    REHEARSAL_EXPANSION: float = 1.3  # Interval growth per rehearsal
+    CALIBRATION_PREDICTION_GUARD: int = 10  # Same guard as iter-010
+
+    # Calibration interval modifiers (additive to base interval ratio)
+    _WELL_CALIBRATED_MODIFIER: float = 0.10
+    _OVERCONFIDENT_MODIFIER: float = -0.25
+    _UNDERCONFIDENT_MODIFIER: float = 0.20
+
+    def __init__(
+        self,
+        *,
+        min_interval: float | None = None,
+        max_interval: float | None = None,
+    ):
+        self._min_interval = min_interval or self.MIN_INTERVAL
+        self._max_interval = max_interval or self.MAX_INTERVAL
+        # Calibration state (updated each tick by the pillar wrapper)
+        self._calibration_ece: float = 0.0
+        self._calibration_bias: float = 0.0
+        self._calibration_overconfident: bool = False
+        self._calibration_underconfident: bool = False
+        self._calibration_total_predictions: int = 0
+
+    def set_calibration_state(
+        self,
+        ece: float,
+        bias: float,
+        is_overconfident: bool,
+        is_underconfident: bool,
+        total_predictions: int,
+    ) -> None:
+        """Update calibration metrics (mirrors HierarchicalMneme)."""
+        self._calibration_ece = ece
+        self._calibration_bias = bias
+        self._calibration_overconfident = is_overconfident
+        self._calibration_underconfident = is_underconfident
+        self._calibration_total_predictions = total_predictions
+
+    def compute_next_rehearsal_interval(
+        self,
+        entry: MemoryEntry,
+        *,
+        consolidate_prune_position: float = 0.0,
+    ) -> float:
+        """Compute the optimal interval until next rehearsal for an entry.
+
+        Args:
+            entry: The memory entry to schedule.
+            consolidate_prune_position: Current position of the
+                consolidate_prune tension axis [-1, 1].
+
+        Returns:
+            Interval in seconds until next rehearsal.
+        """
+        effective_hl = entry._effective_half_life()
+        significance_factor = 0.5 + entry.significance
+
+        # Base interval: proportional to effective half-life
+        # effective_hl already includes 1.5^rehearsal_count spacing effect;
+        # no separate expansion needed to avoid double-counting.
+        interval_base = effective_hl * significance_factor
+
+        # Calibration modifier
+        cal_modifier = 0.0
+        if self._calibration_total_predictions >= self.CALIBRATION_PREDICTION_GUARD:
+            if self._calibration_ece <= 0.05:
+                cal_modifier = self._WELL_CALIBRATED_MODIFIER
+            elif self._calibration_overconfident and self._calibration_ece > 0.15:
+                cal_modifier = self._OVERCONFIDENT_MODIFIER
+            elif self._calibration_underconfident and self._calibration_ece > 0.15:
+                cal_modifier = self._UNDERCONFIDENT_MODIFIER
+
+        # Tension modifier: consolidate -> shorter, prune -> longer
+        tension_modifier = 0.15 * consolidate_prune_position
+
+        # Compose: interval = base * (1 + cal_mod) * (1 + tension_mod)
+        interval = interval_base * (1.0 + cal_modifier) * (1.0 + tension_modifier)
+
+        # Clamp
+        return max(self._min_interval, min(self._max_interval, interval))
+
+    def compute_next_rehearsal_at(
+        self,
+        entry: MemoryEntry,
+        *,
+        current_time: float | None = None,
+        consolidate_prune_position: float = 0.0,
+    ) -> float:
+        """Compute the absolute timestamp when entry should next be rehearsed.
+
+        Args:
+            entry: The memory entry to schedule.
+            current_time: Current timestamp (defaults to time.time()).
+            consolidate_prune_position: Position of consolidate_prune axis.
+
+        Returns:
+            Absolute timestamp for next rehearsal.
+        """
+        t = current_time if current_time is not None else time.time()
+        interval = self.compute_next_rehearsal_interval(
+            entry, consolidate_prune_position=consolidate_prune_position,
+        )
+        return t + interval
+
+    def is_due_for_rehearsal(
+        self,
+        entry: MemoryEntry,
+        *,
+        current_time: float | None = None,
+        consolidate_prune_position: float = 0.0,
+    ) -> bool:
+        """Check if an entry is due for rehearsal at the current time.
+
+        An entry is due if its next_rehearsal_at (computed from
+        last_rehearsed + interval) is in the past.
+
+        Args:
+            entry: The memory entry to check.
+            current_time: Current timestamp (defaults to time.time()).
+            consolidate_prune_position: Position of consolidate_prune axis.
+
+        Returns:
+            True if the entry should be rehearsed now.
+        """
+        t = current_time if current_time is not None else time.time()
+        next_at = self.compute_next_rehearsal_at(
+            entry,
+            current_time=entry.last_rehearsed,
+            consolidate_prune_position=consolidate_prune_position,
+        )
+        return t >= next_at
+
+    def get_calibration_modifier(self) -> float:
+        """Return the current calibration interval modifier value.
+
+        Useful for diagnostics and testing.
+        """
+        if self._calibration_total_predictions < self.CALIBRATION_PREDICTION_GUARD:
+            return 0.0
+        if self._calibration_ece <= 0.05:
+            return self._WELL_CALIBRATED_MODIFIER
+        elif self._calibration_overconfident and self._calibration_ece > 0.15:
+            return self._OVERCONFIDENT_MODIFIER
+        elif self._calibration_underconfident and self._calibration_ece > 0.15:
+            return self._UNDERCONFIDENT_MODIFIER
+        return 0.0
+
+    @property
+    def calibration_active(self) -> bool:
+        return self._calibration_total_predictions >= self.CALIBRATION_PREDICTION_GUARD
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize scheduler state for cross-session persistence."""
+        return {
+            "min_interval": self._min_interval,
+            "max_interval": self._max_interval,
+            "calibration_ece": self._calibration_ece,
+            "calibration_bias": self._calibration_bias,
+            "calibration_overconfident": self._calibration_overconfident,
+            "calibration_underconfident": self._calibration_underconfident,
+            "calibration_total_predictions": self._calibration_total_predictions,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RehearsalScheduler:
+        """Deserialize scheduler state."""
+        scheduler = cls(
+            min_interval=data.get("min_interval"),
+            max_interval=data.get("max_interval"),
+        )
+        scheduler._calibration_ece = data.get("calibration_ece", 0.0)
+        scheduler._calibration_bias = data.get("calibration_bias", 0.0)
+        scheduler._calibration_overconfident = data.get("calibration_overconfident", False)
+        scheduler._calibration_underconfident = data.get("calibration_underconfident", False)
+        scheduler._calibration_total_predictions = data.get("calibration_total_predictions", 0)
+        return scheduler
+
 class HierarchicalMneme:
     """Three-tier memory with Ebbinghaus decay and spaced repetition.
 
@@ -348,6 +582,9 @@ class HierarchicalMneme:
         self._calibration_overconfident: bool = False
         self._calibration_underconfident: bool = False
         self._calibration_total_predictions: int = 0
+
+        # Rehearsal scheduler (iter-018)
+        self._rehearsal_scheduler = RehearsalScheduler()
 
     # ══════════════════════════════════════════════════════════════
     # Public API — Storage
@@ -853,6 +1090,88 @@ class HierarchicalMneme:
         return count
 
     # ══════════════════════════════════════════════════════════════
+    # Public API — Rehearsal Scheduling (iter-018)
+    # ══════════════════════════════════════════════════════════════
+
+    def get_rehearsal_candidates(
+        self,
+        *,
+        current_time: float | None = None,
+        tier_filter: MemoryTier | None = None,
+        max_candidates: int = 50,
+    ) -> list[MemoryEntry]:
+        """Return entries that are due for rehearsal, sorted by urgency.
+
+        Uses the RehearsalScheduler to determine which entries have exceeded
+        their optimal rehearsal interval. Entries are sorted by how overdue
+        they are (most overdue first).
+
+        Args:
+            current_time: Current timestamp (defaults to time.time()).
+            tier_filter: If set, only consider entries in this tier.
+            max_candidates: Maximum number of candidates to return.
+
+        Returns:
+            List of MemoryEntry objects due for rehearsal, most overdue first.
+        """
+        t = current_time if current_time is not None else time.time()
+        consolidate_prune = self._current_profile.get("consolidate_prune", 0.0)
+
+        candidates: list[tuple[float, MemoryEntry]] = []
+        for tier in (self._working, self._episodic, self._semantic):
+            for entry in tier.values():
+                if tier_filter is not None and entry.tier != tier_filter:
+                    continue
+                if self._rehearsal_scheduler.is_due_for_rehearsal(
+                    entry,
+                    current_time=t,
+                    consolidate_prune_position=consolidate_prune,
+                ):
+                    # Urgency: how overdue (negative = not yet due, larger = more overdue)
+                    next_at = self._rehearsal_scheduler.compute_next_rehearsal_at(
+                        entry,
+                        current_time=entry.last_rehearsed,
+                        consolidate_prune_position=consolidate_prune,
+                    )
+                    urgency = t - next_at
+                    candidates.append((urgency, entry))
+
+        # Sort by urgency descending (most overdue first)
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return [entry for _, entry in candidates[:max_candidates]]
+
+    def rehearse_due_candidates(
+        self,
+        *,
+        current_time: float | None = None,
+        boost: float | None = None,
+    ) -> int:
+        """Rehearse all entries that are due for rehearsal.
+
+        Convenience method that finds due candidates and rehearses each one.
+        Uses the calibration-aware rehearse() method for each entry, so
+        calibration gating from iter-010 still applies.
+
+        Args:
+            current_time: Current timestamp (defaults to time.time()).
+            boost: Optional rehearsal boost override.
+
+        Returns:
+            Number of entries rehearsed.
+        """
+        candidates = self.get_rehearsal_candidates(current_time=current_time)
+        if not candidates:
+            return 0
+
+        base_boost = boost or self._rehearsal_boost
+        count = 0
+        for entry in candidates:
+            if self.rehearse(entry.id, boost=base_boost):
+                count += 1
+        return count
+
+
+    # ══════════════════════════════════════════════════════════════
     # Public API — Tension Integration
     # ══════════════════════════════════════════════════════════════
 
@@ -884,6 +1203,15 @@ class HierarchicalMneme:
         self._calibration_underconfident = is_underconfident
         self._calibration_total_predictions = total_predictions
 
+
+        # Sync to rehearsal scheduler (iter-018)
+        self._rehearsal_scheduler.set_calibration_state(
+            ece=ece,
+            bias=bias,
+            is_overconfident=is_overconfident,
+            is_underconfident=is_underconfident,
+            total_predictions=total_predictions,
+        )
     def set_tension_profile(self, profile: dict[TensionID, float]) -> None:
         """Update the tension profile from the equilibrium engine.
 
@@ -1252,6 +1580,7 @@ class HierarchicalMneme:
                 for ce in self._consolidation_log
             ],
             "tension_profile": dict(self._current_profile),
+        "rehearsal_scheduler": self._rehearsal_scheduler.to_dict(),
         }
 
     @classmethod
@@ -1385,6 +1714,11 @@ class HierarchicalMneme:
 
         # Restore tension profile
         mneme._current_profile.update(data.get("tension_profile", {}))
+
+        # Restore rehearsal scheduler (iter-018)
+        rs_data = data.get("rehearsal_scheduler")
+        if rs_data is not None:
+            mneme._rehearsal_scheduler = RehearsalScheduler.from_dict(rs_data)
 
         return mneme
 

@@ -16,6 +16,7 @@ from isonome.mneme.hierarchical import (
     MemoryEntry,
     MemoryTier,
     MnemeStats,
+    RehearsalScheduler,
 )
 from isonome.mneme.pillar import MnemePillar
 
@@ -27,4 +28,5 @@ __all__ = [
     "MemoryTier",
     "MnemePillar",
     "MnemeStats",
+    "RehearsalScheduler",
 ]
