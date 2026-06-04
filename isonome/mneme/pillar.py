@@ -221,11 +221,22 @@ class MnemePillar(BasePillar):
     # ── Convenience methods ────────────────────────────────────────
 
     def update_tension_profile(self, profile: dict) -> None:
-        """Update the mneme's tension profile (call each tick)."""
+        """Update the mneme's tension profile (call each tick).
+
+        When the pillar is bound to an engine, consolidation is handled
+        automatically by _on_equilibrium_sync() during process_queued().
+        This method only syncs the profile without re-consolidating to
+        avoid double-consolidation per tick.
+
+        For standalone use (no engine bound), consolidation is still
+        triggered here since there is no auto-sync path.
+        """
         if self.mneme is not None:
             self.mneme.set_tension_profile(profile)
-            # Run a light consolidation each tick for gradual decay
-            self.mneme.consolidate()
+            # Only consolidate if not bound to an engine (which already
+            # handles consolidation in _on_equilibrium_sync)
+            if self._engine is None:
+                self.mneme.consolidate()
 
     def update_calibration(
         self,
