@@ -797,7 +797,7 @@ class ActionOrchestrator:
                 })
             results_dict[str(aid)] = serialized_results
 
-        return {
+        data = {
             "actions": actions_dict,
             "states": {str(aid): s.name for aid, s in self._states.items()},
             "completed": [str(aid) for aid in self._completed],
@@ -818,6 +818,10 @@ class ActionOrchestrator:
             },
             "execution_log": self._execution_log[-100:],  # Keep last 100
         }
+        # Serialize delegation gate if present
+        if self._delegation_gate is not None:
+            data["delegation_gate"] = self._delegation_gate.to_dict()
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], **kwargs: Any) -> ActionOrchestrator:
@@ -991,6 +995,48 @@ class ActionOrchestrator:
     def action_states(self) -> dict[UUID, ActionState]:
         """Current state of every action (mutable view for inspection)."""
         return dict(self._states)
+
+
+    def cancel_action(self, action_id) -> bool:
+        """Cancel a specific action by ID.
+
+        Only actions in PENDING or QUEUED state can be cancelled.
+        Actions already executing, completed, failed, or blocked
+        cannot be cancelled.
+
+        Args:
+            action_id: The UUID of the action to cancel.
+
+        Returns:
+            True if the action was successfully cancelled, False otherwise.
+        """
+        state = self._states.get(action_id)
+        if state is None:
+            return False
+        if state not in (ActionState.PENDING, ActionState.QUEUED):
+            return False
+        self._states[action_id] = ActionState.CANCELLED
+        self._total_cancelled = getattr(self, '_total_cancelled', 0) + 1
+        return True
+
+    def cancel_all(self) -> int:
+        """Cancel all non-terminal actions.
+
+        Cancels actions in PENDING or QUEUED state. Actions already
+        in a terminal state (COMPLETED, FAILED, CANCELLED, BLOCKED)
+        or currently EXECUTING are left unchanged.
+
+        Returns:
+            The number of actions that were cancelled.
+        """
+        count = 0
+        for aid, list_state in list(self._states.items()):
+            if list_state in (ActionState.PENDING, ActionState.QUEUED):
+                self._states[aid] = ActionState.CANCELLED
+                count += 1
+        if count > 0:
+            self._total_cancelled = getattr(self, '_total_cancelled', 0) + count
+        return count
 
     @property
     def execution_log(self) -> tuple[dict[str, Any], ...]:
