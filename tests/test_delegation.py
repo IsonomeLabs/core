@@ -826,3 +826,69 @@ class TestDelegationEdgeCases:
             gate.check(action)
         assert len(gate.records) == 10
         assert gate._total_delegated == 10
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Orchestrator serialization with delegation gate
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestOrchestratorDelegationSerialization:
+    """Test that orchestrator to_dict/from_dict preserves delegation gate."""
+
+    def test_to_dict_includes_delegation_gate(self):
+        orch = ActionOrchestrator()
+        gate = DelegationGate(calibrator=OverconfidentCalibrator())
+        orch.set_delegation_gate(gate=gate)
+        orch.register_action(Action(description="test", tool_name="t", risk=ActionRisk.LOW))
+        orch.execute_batch(lambda a: "ok")
+        data = orch.to_dict()
+        assert "delegation_gate" in data
+        assert data["delegation_gate"]["ece_threshold"] == 0.15
+
+    def test_to_dict_no_delegation_gate(self):
+        orch = ActionOrchestrator()
+        data = orch.to_dict()
+        assert "delegation_gate" not in data
+
+    def test_from_dict_restores_gate_config(self):
+        orch = ActionOrchestrator()
+        gate = DelegationGate(
+            calibrator=OverconfidentCalibrator(),
+            ece_threshold=0.20,
+            overconfident_risk_threshold=3,
+        )
+        orch.set_delegation_gate(gate=gate)
+        action = Action(description="test", tool_name="t", risk=ActionRisk.HIGH)
+        orch.register_action(action)
+        orch.execute_batch(lambda a: "ok")
+        data = orch.to_dict()
+        # Restore without calibrator (calibrators aren't serialized)
+        orch2 = ActionOrchestrator.from_dict(data)
+        assert orch2._delegation_gate is not None
+        assert orch2._delegation_gate._ece_threshold == 0.20
+        assert orch2._delegation_gate._overconfident_risk_threshold == 3
+
+    def test_from_dict_without_gate_data(self):
+        """Orchestrator without delegation gate should deserialize cleanly."""
+        orch = ActionOrchestrator()
+        orch.register_action(Action(description="test", tool_name="t", risk=ActionRisk.LOW))
+        orch.execute_batch(lambda a: "ok")
+        data = orch.to_dict()
+        orch2 = ActionOrchestrator.from_dict(data)
+        assert orch2._delegation_gate is None
+
+    def test_from_dict_restores_gate_stats(self):
+        """Gate cumulative stats should survive serialization round-trip."""
+        orch = ActionOrchestrator()
+        gate = DelegationGate(calibrator=OverconfidentCalibrator())
+        orch.set_delegation_gate(gate=gate)
+        for risk in [ActionRisk.TRIVIAL, ActionRisk.LOW, ActionRisk.MODERATE, ActionRisk.HIGH]:
+            orch.register_action(Action(description=f"t-{risk.name}", tool_name="t", risk=risk))
+        orch.set_tension_profile({"autonomy_safety": 1.0, "sequential_parallel": 0.0, "verify_execute": 0.0})
+        orch.execute_batch(lambda a: "ok")
+        data = orch.to_dict()
+        orch2 = ActionOrchestrator.from_dict(data)
+        assert orch2._delegation_gate._total_checks == 4
+        assert orch2._delegation_gate._total_delegated == 2
