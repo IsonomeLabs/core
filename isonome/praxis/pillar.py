@@ -19,6 +19,7 @@ import logging
 from typing import Any, Callable
 
 from isonome.base import BasePillar
+from isonome.praxis.delegation import DelegationGate
 from isonome.praxis.orchestrator import (
     Action,
     ActionOrchestrator,
@@ -72,6 +73,7 @@ class PraxisPillar(BasePillar):
         max_parallel: int = 8,
         default_retry_policy: RetryPolicy | None = None,
         confidence_calibrator: Any = None,  # ConfidenceCalibrator for safety gating
+    delegation_gate: DelegationGate | None = None, # Calibration-gated delegation
     ):
         """Initialize the Praxis pillar.
 
@@ -82,6 +84,7 @@ class PraxisPillar(BasePillar):
             approve_fn: Optional callback to approve safety-gated actions.
             max_parallel: Maximum concurrent executions.
             default_retry_policy: Fallback retry policy.
+    delegation_gate: Optional DelegationGate for calibration-gated delegation.
         """
         super().__init__(name=name)
         self._executor_fn = executor_fn
@@ -90,6 +93,7 @@ class PraxisPillar(BasePillar):
         self._max_parallel = max_parallel
         self._default_retry = default_retry_policy
         self._confidence_calibrator = confidence_calibrator
+        self._delegation_gate = delegation_gate
         self.orchestrator: ActionOrchestrator | None = None
         self._last_report: ExecutionReport | None = None
 
@@ -106,6 +110,11 @@ class PraxisPillar(BasePillar):
             default_retry_policy=self._default_retry,
             confidence_calibrator=self._confidence_calibrator,
         )
+        # Wire delegation gate if provided or if calibrator is available
+        if self._delegation_gate is not None:
+            self.orchestrator.set_delegation_gate(self._delegation_gate)
+        elif self._confidence_calibrator is not None:
+            self.orchestrator.set_delegation_gate(calibrator=self._confidence_calibrator)
         # Set initial tension profile from agent state
         if state.tensions is not None:
             profile = {}
@@ -343,10 +352,27 @@ class PraxisPillar(BasePillar):
         Passes through to the underlying orchestrator. Set to None
         to disable confidence-based gating. Call this after wiring
         the Cognition pillar's calibrator during agent setup.
+
+        Also updates the delegation gate if one is present.
         """
         self._confidence_calibrator = calibrator
         if self.orchestrator is not None:
             self.orchestrator.set_confidence_calibrator(calibrator)
+            # Auto-wire delegation gate to use the new calibrator
+            if self.orchestrator._delegation_gate is not None:
+                self.orchestrator._delegation_gate.set_calibrator(calibrator)
+
+    def set_delegation_gate(self, gate: DelegationGate | None = None, *, calibrator: Any = None) -> None:
+        """Set or replace the delegation gate.
+
+        Passes through to the underlying orchestrator. When a calibrator
+        is set on the pillar, it is automatically wired to the gate.
+        """
+        if calibrator is None and self._confidence_calibrator is not None:
+            calibrator = self._confidence_calibrator
+        if self.orchestrator is not None:
+            self.orchestrator.set_delegation_gate(gate, calibrator=calibrator)
+        self._delegation_gate = self.orchestrator._delegation_gate if self.orchestrator else gate
 
     # ── Convenience methods ────────────────────────────────────────
 

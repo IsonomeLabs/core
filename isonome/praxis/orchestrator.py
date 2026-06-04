@@ -28,6 +28,11 @@ from typing import Any, Callable, Sequence
 from uuid import UUID, uuid4
 
 from isonome.types import TensionID
+from isonome.praxis.delegation import (
+    DelegationDecision,
+    DelegationGate,
+    DelegationMode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +152,9 @@ class ExecutionReport:
     calibration_applied: bool = False  # Whether the calibrator was used
     calibration_ece: float = 0.0  # ECE at time of execution (for verify modulation)
     verify_modulation: float = 0.0  # How much verify depth was adjusted by calibration
+    delegation_active: bool = False  # Whether delegation gate was active
+    delegation_count: int = 0  # How many actions were delegated
+    delegation_mode: str = ""  # Current DelegationMode name
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -224,6 +232,7 @@ class ActionOrchestrator:
         self._default_retry = default_retry_policy or RetryPolicy()
         self._engine = engine
         self._confidence_calibrator = confidence_calibrator
+        self._delegation_gate: DelegationGate | None = None
 
         # Statistics
         self._total_executed: int = 0
@@ -250,6 +259,27 @@ class ActionOrchestrator:
         Set to None to disable confidence-based gating.
         """
         self._confidence_calibrator = calibrator
+
+    def set_delegation_gate(self, gate: DelegationGate | None = None, *, calibrator: Any = None) -> None:
+        """Set or replace the delegation gate.
+
+        If a calibrator is provided and no gate is given, creates a
+        DelegationGate with default parameters using that calibrator.
+        If both gate and calibrator are provided, the calibrator is
+        set on the gate.
+
+        Set to None to disable calibration-gated delegation.
+        """
+        if gate is not None:
+            if calibrator is not None:
+                gate.set_calibrator(calibrator)
+            self._delegation_gate = gate
+        elif calibrator is not None:
+            self._delegation_gate = DelegationGate(calibrator=calibrator)
+        elif self._confidence_calibrator is not None:
+            self._delegation_gate = DelegationGate(calibrator=self._confidence_calibrator)
+        else:
+            self._delegation_gate = None
 
     # ── Action Registration ──────────────────────────────────────
 
@@ -346,6 +376,9 @@ class ActionOrchestrator:
         # This closes the metacognitive loop: Cognition learns calibration,
         # Praxis uses it to make smarter safety decisions.
         confidence_blocks = 0
+        delegation_count = 0
+        delegation_active = False
+        delegation_mode_name = ""
         if self._confidence_calibrator is not None:
             # Confidence threshold modulated by autonomy tension:
             # autonomy=-1 (safe):    θ = 0.9 → very high bar, block uncertain actions
@@ -373,6 +406,28 @@ class ActionOrchestrator:
                         blocked_ids.add(aid)
                         self._total_blocked += 1
                         confidence_blocks += 1
+
+        # ── Phase 1.7: Calibration-gated delegation ─────────────
+        # When the delegation gate is active (poor calibration), certain
+        # actions are marked for delegation instead of direct execution.
+        # Delegated actions are removed from the current batch and tracked
+        # separately — they will be executed by a subagent or external handler.
+        # This prevents a poorly-calibrated system from autonomously executing
+        # high-risk actions it can't properly assess.
+        if self._delegation_gate is not None:
+            delegation_active = True
+            delegation_mode_name = self._delegation_gate.compute_mode().name
+            for aid, action in list(self._actions.items()):
+                if aid in blocked_ids:
+                    continue  # Already blocked — no point delegating
+                if self._states[aid] not in (ActionState.QUEUED, ActionState.PENDING):
+                    continue
+                decision = self._delegation_gate.check(action)
+                if decision == DelegationDecision.DELEGATE:
+                    self._states[aid] = ActionState.BLOCKED
+                    blocked_ids.add(aid)
+                    self._total_blocked += 1
+                    delegation_count += 1
 
         # ── Phase 2: Compute parallelism level ──────────────────
         parallel = profile.get("sequential_parallel", 0.0)
@@ -520,6 +575,9 @@ class ActionOrchestrator:
             calibration_ece=round(calibration_ece, 4),
             verify_modulation=round(verify_modulation, 4),
             tension_profile=dict(profile),
+            delegation_active=delegation_active,
+            delegation_count=delegation_count,
+            delegation_mode=delegation_mode_name,
         )
 
     def _execute_single(
@@ -836,6 +894,11 @@ class ActionOrchestrator:
             max_delay=retry_data.get("max_delay", 300.0),
         )
 
+        # Rebuild delegation gate
+        del_data = data.get("delegation_gate")
+        if del_data is not None:
+            orch._delegation_gate = DelegationGate.from_dict(del_data)
+
         # Rebuild stats from deserialized data
         stats = data.get("stats", {})
         orch._total_executed = stats.get("total_executed", 0)
@@ -906,7 +969,7 @@ class ActionOrchestrator:
     @property
     def stats(self) -> dict[str, Any]:
         """Aggregate statistics for monitoring and feedback."""
-        return {
+        result = {
             "total_actions": self.total_actions,
             "total_executed": self._total_executed,
             "total_completed": self._total_completed,
@@ -920,6 +983,9 @@ class ActionOrchestrator:
                 self._total_completed / max(1, self._total_executed)
             ),
         }
+        if self._delegation_gate is not None:
+            result["delegation"] = self._delegation_gate.stats
+        return result
 
     @property
     def action_states(self) -> dict[UUID, ActionState]:
