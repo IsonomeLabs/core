@@ -96,6 +96,7 @@ class PraxisPillar(BasePillar):
         self._delegation_gate = delegation_gate
         self.orchestrator: ActionOrchestrator | None = None
         self._last_report: ExecutionReport | None = None
+        self._momentum_modulations: int = 0
 
     # ── Abstract interface ──────────────────────────────────────
 
@@ -234,6 +235,50 @@ class PraxisPillar(BasePillar):
             self.orchestrator._max_parallel = max(
                 1, self._max_parallel // 2
             )
+
+        # ── Momentum-aware behavior modulation (iter-024) ──
+        # When velocity tracking is enabled, read momentum data to
+        # modulate execution behavior based on tension direction.
+        if view.momentum_scores and self.orchestrator is not None:
+            # Praxis owns autonomy_safety, verify_execute, plan_execute
+
+            # When autonomy_safety is drifting toward unsafe
+            # (momentum < 0), boost verify depth to compensate —
+            # the agent should verify more thoroughly when its
+            # safety balance is heading in the wrong direction.
+            autonomy_momentum = view.get_momentum_score("autonomy_safety")
+            if autonomy_momentum < 0:
+                # Boost verify depth: push the verify_execute axis
+                # toward verify (negative) to increase scrutiny
+                verify_shift = min(0.3, abs(autonomy_momentum) * 0.25)
+                profile = self.orchestrator._get_tension_profile()
+                current_verify = profile.get(
+                    "verify_execute", 0.0
+                )
+                self.orchestrator.set_tension_profile({
+                    **profile,
+                    "verify_execute": max(
+                        -1.0, current_verify - verify_shift
+                    ),
+                })
+                self._momentum_modulations += 1
+                logger.debug(
+                    f"{self.name}: momentum verify boost {verify_shift:.3f} "
+                    f"on autonomy_safety (momentum={autonomy_momentum:.3f})"
+                )
+
+            # When verify_execute is oscillation-imminent, reduce
+            # max_parallel to avoid compounding instability with
+            # concurrent executions under uncertain verification.
+            if "verify_execute" in view.oscillation_imminent:
+                self.orchestrator._max_parallel = max(
+                    1, self.orchestrator._max_parallel // 2
+                )
+                self._momentum_modulations += 1
+                logger.debug(
+                    f"{self.name}: verify_execute oscillation-imminent — "
+                    f"reducing max_parallel"
+                )
 
     # ── Execution ─────────────────────────────────────────────────
 
@@ -441,6 +486,7 @@ class PraxisPillar(BasePillar):
                 else None
             ),
         }
+        result["momentum_modulations"] = self._momentum_modulations
         result["_schema_version"] = SERIALIZATION_SCHEMA_VERSION
         return result
 
@@ -494,6 +540,9 @@ class PraxisPillar(BasePillar):
         logger.info(
             f"{self.name}: restored {self.orchestrator.total_actions} actions"
         )
+
+        # Restore momentum modulations counter
+        self._momentum_modulations = int(data.get("momentum_modulations", 0))
 
     @property
     def last_report(self) -> ExecutionReport | None:

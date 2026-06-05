@@ -109,11 +109,12 @@ class CognitionPillar(BasePillar):
         self.reasoning: RecursiveReasoningEngine | None = None
 
         # State
-        self._last_plan: Any = None  # ReasoningPlan | None
-        self._last_gc_report: Any = None  # GarbageCollectionReport | None
+        self._last_plan: Any = None # ReasoningPlan | None
+        self._last_gc_report: Any = None # GarbageCollectionReport | None
         self._context_added: int = 0
         self._tasks_reasoned: int = 0
         self._ticks_without_gc: int = 0
+        self._momentum_modulations: int = 0
 
     # ── Abstract interface ──────────────────────────────────────
 
@@ -403,6 +404,47 @@ class CognitionPillar(BasePillar):
                 f"exercising caution in plan confidence"
             )
 
+        # ── Momentum-aware behavior modulation (iter-024) ──
+        # When velocity tracking is enabled, read momentum data to
+        # modulate pillar behavior based on tension direction.
+        if view.momentum_scores:
+            # Cognition owns explore_exploit, shallow_deep, divergent_convergent
+
+            # When explore_exploit is drifting away from default
+            # (momentum < 0), boost reasoning depth to compensate —
+            # the agent needs to explore more when its explore/exploit
+            # balance is heading in the wrong direction.
+            explore_momentum = view.get_momentum_score("explore_exploit")
+            if explore_momentum < 0 and self.reasoning is not None:
+                # Apply a momentum depth boost: the more negative
+                # the momentum, the stronger the depth compensation.
+                # This works by temporarily increasing the calibration
+                # amplifier via the reasoning engine's profile.
+                boost = min(0.4, abs(explore_momentum) * 0.3)
+                if self.reasoning._current_profile.get("shallow_deep", 0) < 1.0:
+                    self.reasoning._current_profile["shallow_deep"] = min(
+                        1.0,
+                        self.reasoning._current_profile.get("shallow_deep", 0) + boost,
+                    )
+                self._momentum_modulations += 1
+                logger.debug(
+                    f"{self.name}: momentum depth boost +{boost:.3f} "
+                    f"on explore_exploit (momentum={explore_momentum:.3f})"
+                )
+
+            # When shallow_deep is oscillation-imminent, cap reasoning
+            # depth to avoid compounding instability with deep plans.
+            if "shallow_deep" in view.oscillation_imminent and self.reasoning is not None:
+                # Force shallow mode to prevent runaway depth during instability
+                self.reasoning._current_profile["shallow_deep"] = min(
+                    -0.5, self.reasoning._current_profile.get("shallow_deep", 0)
+                )
+                self._momentum_modulations += 1
+                logger.debug(
+                    f"{self.name}: shallow_deep oscillation-imminent — "
+                    f"capping reasoning depth"
+                )
+
     # ── Pillar tick operations ──────────────────────────────────
 
     def update_tension_profile(self, profile: dict[TensionID, float]) -> None:
@@ -537,6 +579,7 @@ class CognitionPillar(BasePillar):
             "compress_ratio": self._compress_ratio,
             "auto_gc": self._auto_gc,
             "gc_utilization_threshold": self._gc_util_threshold,
+            "momentum_modulations": self._momentum_modulations,
             "_pillar_config": {
                 "name": self.name,
                 "has_decomposer_fn": self._decomposer_fn is not None,
@@ -607,6 +650,7 @@ class CognitionPillar(BasePillar):
         self._compress_ratio = float(data.get("compress_ratio", 0.20))
         self._auto_gc = bool(data.get("auto_gc", True))
         self._gc_util_threshold = float(data.get("gc_utilization_threshold", 0.80))
+        self._momentum_modulations = int(data.get("momentum_modulations", 0))
 
         # Restore calibrator first — it's needed by both subsystems
         calibrator = None

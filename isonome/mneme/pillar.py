@@ -54,6 +54,7 @@ class MnemePillar(BasePillar):
         self._cons_sig = consolidation_significance
         self._prom_sig = promotion_significance
         self._last_recall_results: list | None = None
+        self._momentum_modulations: int = 0
 
     @property
     def last_recall_results(self) -> list | None:
@@ -239,10 +240,51 @@ class MnemePillar(BasePillar):
         influence: when Praxis is failing, reduce memory pruning
         to preserve potentially-useful context.
         """
+        # ── Momentum-aware behavior modulation (iter-024) ──
+        # Must happen BEFORE consolidation so oscillation-imminent
+        # can suppress the consolidation cycle entirely.
+        _skip_consolidation = False
+        if view.momentum_scores and self.mneme is not None:
+            # Mneme owns consolidate_prune, novelty_familiarity
+
+            # When consolidate_prune is drifting toward prune
+            # (momentum < 0), boost consolidation significance
+            # threshold to protect memories from over-aggressive
+            # pruning during downward drift.
+            cons_momentum = view.get_momentum_score("consolidate_prune")
+            if cons_momentum < 0:
+                # Boost the consolidation significance threshold:
+                # a higher threshold means fewer items get pruned,
+                # protecting memories during risky drift.
+                boost = min(0.2, abs(cons_momentum) * 0.15)
+                self._cons_sig = (self._cons_sig or 0.5) + boost
+                self.mneme._consolidation_significance = self._cons_sig
+                self._momentum_modulations += 1
+                logger.debug(
+                    f"{self.name}: momentum cons_sig boost +{boost:.3f} "
+                    f"on consolidate_prune (momentum={cons_momentum:.3f})"
+                )
+
+            # When consolidate_prune is oscillation-imminent,
+            # skip consolidation to avoid destabilizing memory
+            # during oscillation.
+            if "consolidate_prune" in view.oscillation_imminent:
+                # Suppress consolidation by temporarily raising
+                # the threshold very high
+                self.mneme._consolidation_significance = 10.0
+                _skip_consolidation = True
+                self._momentum_modulations += 1
+                logger.debug(
+                    f"{self.name}: consolidate_prune oscillation-imminent — "
+                    f"skipping consolidation"
+                )
+
         if self.mneme is not None:
             self.mneme.set_tension_profile(view.all_positions)
             # Run a light consolidation each tick for gradual decay
-            self.mneme.consolidate()
+            # UNLESS oscillation-imminent is suppressing it
+            if not _skip_consolidation:
+                self.mneme.consolidate()
 
         # Cross-pillar modulation: if Praxis is in safe mode
         # (low autonomy_safety), reduce pruning aggressiveness
@@ -359,6 +401,7 @@ class MnemePillar(BasePillar):
             "promotion_significance": self._prom_sig,
         }
         result["_schema_version"] = SERIALIZATION_SCHEMA_VERSION
+        result["momentum_modulations"] = self._momentum_modulations
         return result
 
     def restore(self, data: dict) -> None:
@@ -395,3 +438,6 @@ class MnemePillar(BasePillar):
                 self.mneme._promotion_significance = self._prom_sig
 
         logger.info(f"{self.name}: restored {self.mneme.total_memories} memories")
+
+        # Restore momentum modulations counter
+        self._momentum_modulations = int(data.get("momentum_modulations", 0))

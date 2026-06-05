@@ -254,6 +254,11 @@ class MnemeStats:
     total_retrievals: int = 0
     consolidation_events: list[ConsolidationEvent] = field(default_factory=list)
 
+    @property
+    def consolidation_count(self) -> int:
+        """Alias for total_consolidations (iter-024 compat)."""
+        return self.total_consolidations
+
     def summary(self) -> dict:
         return {
             "working_memories": self.working_count,
