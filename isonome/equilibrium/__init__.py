@@ -30,6 +30,7 @@ from isonome.types import (
     TensionSnapshot,
     now as now,
 )
+from isonome.equilibrium.velocity import TensionVelocityTracker
 
 
 class PillarEquilibriumView:
@@ -90,6 +91,9 @@ class PillarEquilibriumView:
         "_drift",
         "_oscillating",
         "_oscillation_threshold",
+        "_velocities",
+        "_momentum_scores",
+        "_oscillation_imminent",
     )
 
     def __init__(
@@ -98,6 +102,7 @@ class PillarEquilibriumView:
         axes: dict[TensionID, TensionAxis],
         history: dict[TensionID, deque],
         oscillation_threshold: float,
+        velocity_tracker: TensionVelocityTracker | None = None,
     ):
         # Split axes into own and cross-pillar
         self._pillar = pillar
@@ -108,6 +113,11 @@ class PillarEquilibriumView:
         self._drift: dict[TensionID, float] = {}
         self._oscillating: list[TensionID] = []
         self._oscillation_threshold = oscillation_threshold
+
+        # Velocity data (empty dicts if no tracker)
+        self._velocities: dict[TensionID, float] = {}
+        self._momentum_scores: dict[TensionID, float] = {}
+        self._oscillation_imminent: list[TensionID] = []
 
         for axis_id, axis in axes.items():
             pos = axis.position
@@ -131,7 +141,16 @@ class PillarEquilibriumView:
                 if stddev > oscillation_threshold:
                     self._oscillating.append(axis_id)
 
-        # Compute stress level (RMS drift from homeostasis)
+            # Populate velocity data if tracker available
+            if velocity_tracker is not None:
+                vel = velocity_tracker.get_velocity(axis_id)
+                mom = velocity_tracker.get_momentum_score(axis_id)
+                self._velocities[axis_id] = vel
+                self._momentum_scores[axis_id] = mom
+                if velocity_tracker.is_oscillation_imminent(axis_id):
+                    self._oscillation_imminent.append(axis_id)
+
+            # Compute stress level (RMS drift from homeostasis)
         if self._drift:
             squared = sum(d ** 2 for d in self._drift.values())
             self._stress_level = math.sqrt(squared / len(self._drift))
@@ -211,6 +230,35 @@ class PillarEquilibriumView:
         """Whether the stress level exceeds the critical threshold (0.5)."""
         return self._stress_level > 0.5
 
+    @property
+    def velocities(self) -> dict[TensionID, float]:
+        """Per-axis velocity values: {axis_id: velocity}.
+
+        Velocity is the rate of position change per tick. Positive values
+        mean the axis is moving right on its pole spectrum, negative means
+        moving left. Only populated when velocity tracking is enabled.
+        """
+        return dict(self._velocities)
+
+    @property
+    def momentum_scores(self) -> dict[TensionID, float]:
+        """Per-axis momentum scores: {axis_id: momentum_score}.
+
+        Positive = heading toward default (good), negative = drifting
+        away (bad). Only populated when velocity tracking is enabled.
+        """
+        return dict(self._momentum_scores)
+
+    @property
+    def oscillation_imminent(self) -> tuple[TensionID, ...]:
+        """Axes predicted to oscillate based on velocity reversal patterns.
+
+        Unlike `oscillating` which reports post-hoc (stddev already high),
+        this uses velocity reversal rates for early prediction. Only
+        populated when velocity tracking is enabled.
+        """
+        return tuple(self._oscillation_imminent)
+
     # ── Convenience methods ───────────────────────────────────────
 
     def get(self, axis_id: TensionID, default: float = 0.0) -> float:
@@ -233,9 +281,31 @@ class PillarEquilibriumView:
         """Check if a specific axis is oscillating."""
         return axis_id in self._oscillating
 
+    def get_velocity(self, axis_id: TensionID) -> float:
+        """Get the current velocity of a specific axis.
+
+        Returns 0.0 if velocity tracking is disabled or axis unknown.
+        """
+        return self._velocities.get(axis_id, 0.0)
+
+    def get_momentum_score(self, axis_id: TensionID) -> float:
+        """Get the momentum score for a specific axis.
+
+        Positive = heading toward default, negative = drifting away.
+        Returns 0.0 if velocity tracking is disabled or axis unknown.
+        """
+        return self._momentum_scores.get(axis_id, 0.0)
+
+    def is_axis_drifting(self, axis_id: TensionID) -> bool:
+        """Check if a specific axis is drifting away from its default.
+
+        Returns True if momentum_score < 0 (moving away from homeostasis).
+        """
+        return self._momentum_scores.get(axis_id, 0.0) < 0
+
     def summary(self) -> dict[str, Any]:
         """Return a summary dict for reporting/logging."""
-        return {
+        result = {
             "pillar": self._pillar.value,
             "own_axes": self._own_axes,
             "cross_axes": self._cross_axes,
@@ -246,14 +316,27 @@ class PillarEquilibriumView:
             "max_drift_axis": max(self._drift, key=self._drift.get) if self._drift else None,
             "max_drift_value": round(max(self._drift.values()), 4) if self._drift else 0.0,
         }
+        if self._velocities:
+            result["velocities"] = {
+                k: round(v, 4) for k, v in self._velocities.items()
+            }
+            result["momentum_scores"] = {
+                k: round(v, 4) for k, v in self._momentum_scores.items()
+            }
+            result["oscillation_imminent"] = list(self._oscillation_imminent)
+        return result
 
     def __repr__(self) -> str:
-        return (
-            f"PillarEquilibriumView(pillar={self._pillar.value}, "
-            f"own={len(self._own_axes)}, cross={len(self._cross_axes)}, "
-            f"stress={self._stress_level:.3f}, "
-            f"oscillating={len(self._oscillating)})"
-        )
+        parts = [
+            f"pillar={self._pillar.value}",
+            f"own={len(self._own_axes)}",
+            f"cross={len(self._cross_axes)}",
+            f"stress={self._stress_level:.3f}",
+            f"oscillating={len(self._oscillating)}",
+        ]
+        if self._oscillation_imminent:
+            parts.append(f"vel_warn={len(self._oscillation_imminent)}")
+        return f"PillarEquilibriumView({', '.join(parts)})"
 
 
 class AdaptiveDampingController:
@@ -663,6 +746,8 @@ class EquilibriumEngine:
         oscillation_window: int = 8,
         adaptive_damping: AdaptiveDampingController | None = None,
         enable_adaptive_damping: bool = False,
+        velocity_tracker: TensionVelocityTracker | None = None,
+        enable_velocity_tracking: bool = False,
     ):
         """Initialize the equilibrium engine.
 
@@ -677,6 +762,12 @@ class EquilibriumEngine:
                 create a default AdaptiveDampingController with the engine's
                 oscillation_threshold. If False (default), the engine uses
                 static per-axis damping from TensionAxis.damping.
+            velocity_tracker: An existing TensionVelocityTracker to bind.
+                If None and enable_velocity_tracking is True, a default
+                tracker is created automatically.
+            enable_velocity_tracking: If True and velocity_tracker is None,
+                create a default TensionVelocityTracker. If False (default),
+                velocity tracking is disabled for backward compatibility.
         """
         axes = tuple(axes) if axes is not None else self.DEFAULT_AXES
         # Initialize each axis with its position set to its default_position,
@@ -708,7 +799,20 @@ class EquilibriumEngine:
             for axis in self._axes.values():
                 self._adaptive_damping.register_axis(axis.id, axis.damping)
 
-    # ── Public API ───────────────────────────────────────────────
+        # -- Velocity tracking integration --
+        if velocity_tracker is not None:
+            self._velocity_tracker = velocity_tracker
+        elif enable_velocity_tracking:
+            self._velocity_tracker = TensionVelocityTracker()
+        else:
+            self._velocity_tracker = None
+
+        # Register all axes with the velocity tracker
+        if self._velocity_tracker is not None:
+            for axis in self._axes.values():
+                self._velocity_tracker.register_axis(axis.id)
+
+        # ── Public API ───────────────────────────────────────────────
 
     @property
     def axes(self) -> tuple[TensionAxis, ...]:
@@ -778,6 +882,14 @@ class EquilibriumEngine:
         self._axes[feedback.tension_axis_id] = new_axis
         self._feedback_count += 1
 
+        # Feed velocity tracker after position update
+        if self._velocity_tracker is not None:
+            self._velocity_tracker.on_position_update(
+                feedback.tension_axis_id,
+                new_axis.position,
+                new_axis.default_position,
+            )
+
         # Notify adaptive damping controller after feedback
         if self._adaptive_damping is not None:
             self._adaptive_damping.on_feedback(
@@ -820,7 +932,16 @@ class EquilibriumEngine:
             self._feedback_count += 1
             self._check_oscillation(axis_id)
 
-        # Phase 3: notify adaptive damping controller for each updated axis
+        # Phase 3: feed velocity tracker for each updated axis
+        if self._velocity_tracker is not None:
+            for axis_id, new_axis in updates.items():
+                self._velocity_tracker.on_position_update(
+                    axis_id,
+                    new_axis.position,
+                    new_axis.default_position,
+                )
+
+        # Phase 4: notify adaptive damping controller for each updated axis
         if self._adaptive_damping is not None:
             for axis_id in updates:
                 self._adaptive_damping.on_feedback(
@@ -871,6 +992,12 @@ class EquilibriumEngine:
             for axis in self._axes.values():
                 self._adaptive_damping.register_axis(axis.id, axis.damping)
 
+        # Reset velocity tracker if present
+        if self._velocity_tracker is not None:
+            self._velocity_tracker.reset()
+            for axis in self._axes.values():
+                self._velocity_tracker.register_axis(axis.id)
+
     def tension_distance(self) -> float:
         """Aggregate drift from homeostasis — how 'stressed' the agent is.
 
@@ -891,6 +1018,11 @@ class EquilibriumEngine:
     def adaptive_damping(self) -> AdaptiveDampingController | None:
         """The adaptive damping controller, or None if not enabled."""
         return self._adaptive_damping
+
+    @property
+    def velocity_tracker(self) -> TensionVelocityTracker | None:
+        """The velocity tracker, or None if not enabled."""
+        return self._velocity_tracker
 
     def view_for(self, pillar: Pillar) -> PillarEquilibriumView:
         """Create a structured read-only view for a specific pillar.
@@ -914,6 +1046,7 @@ class EquilibriumEngine:
             axes=self._axes,
             history=self._history,
             oscillation_threshold=self._oscillation_threshold,
+            velocity_tracker=self._velocity_tracker,
         )
 
     # ── Internal ─────────────────────────────────────────────────
@@ -978,6 +1111,9 @@ class EquilibriumEngine:
             "adaptive_damping_state": (
                 self._adaptive_damping.to_dict() if self._adaptive_damping is not None else None
             ),
+            "velocity_tracker_state": (
+                self._velocity_tracker.to_dict() if self._velocity_tracker is not None else None
+            ),
             }
 
     @classmethod
@@ -1031,6 +1167,16 @@ class EquilibriumEngine:
             for axis in engine._axes.values():
                 if axis.id not in controller._effective_damping:
                     controller.register_axis(axis.id, axis.damping)
+
+        # Restore velocity tracker if present
+        vt_state = data.get("velocity_tracker_state")
+        if vt_state is not None:
+            tracker = TensionVelocityTracker.from_dict(vt_state)
+            engine._velocity_tracker = tracker
+            # Re-register any axes not in the tracker
+            for axis in engine._axes.values():
+                if axis.id not in tracker._velocity:
+                    tracker.register_axis(axis.id)
 
         # Restore oscillation history
         saved_history = data.get("history", {})
