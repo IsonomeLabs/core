@@ -5,6 +5,9 @@ Provides:
   /            — Dashboard HTML
   /api/state   — Full agent state as JSON (tensions, lifecycle, stats)
   /api/demo    — Simulated agent with ticking for demo purposes
+  /sim         — URDF Sim Scaffold (new)
+  /api/upload-urdf  — Upload URDF or ZIP bundle
+  /api/sim/stream   — MJPEG proxy to Isaac Sim / mock bridge
 
 Run: python server.py [--port 8420] [--demo]
 """
@@ -12,14 +15,34 @@ Run: python server.py [--port 8420] [--demo]
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import math
 import random
+import shutil
+import socket
+import sys
+import tempfile
 import threading
 import time
+import zipfile
+from email.parser import BytesParser
+from email.policy import default
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from typing import Any
+
+# Ensure project root is on path for isonome imports
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+# ── Sim Scaffold Constants ───────────────────────────────────────
+
+MJPEG_PROXY_HOST = "localhost"
+MJPEG_PROXY_PORT = 8766  # Isaac Sim or mock bridge MJPEG port
+SIM_UPLOAD_DIR = Path(tempfile.gettempdir()) / "isonome_uploads"
+SIM_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Isonome imports ──────────────────────────────────────────────
 
@@ -183,12 +206,17 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
 
 # ── Demo Agent (simulates ticks for visual demo) ────────────────
 
-class DemoAgent:
-    """Wraps a real IsonomeAgent and simulates activity for the dashboard."""
+class LiveAgent:
+    """Wraps a real IsonomeAgent and drives it with feedback for live dashboard data.
+
+    The agent is real — all tension dynamics, stress computation, oscillation
+    detection, and pillar state are computed by the actual framework. The only
+    synthetic input is the random feedback signal that perturbs the engine.
+    """
 
     def __init__(self):
         self.agent = IsonomeAgent(
-            name="demo-agent",
+            name="dashboard-agent",
             cognition=CognitionPillar(),
             praxis=PraxisPillar(),
             mneme=MnemePillar(),
@@ -197,12 +225,11 @@ class DemoAgent:
         self.tick_count = 0
         self._lock = threading.Lock()
 
-        # Seed some data
+        # Seed initial attention and memory state
         self._seed_attention()
         self._seed_mneme()
 
     def _seed_attention(self):
-        """Add some attention chunks."""
         if self.agent.cognition and self.agent.cognition.attention:
             topics = [
                 ("Analyzing equilibrium drift patterns in multi-axis systems", 0.85, 0.9),
@@ -225,7 +252,6 @@ class DemoAgent:
                 )
 
     def _seed_mneme(self):
-        """Add some memory entries."""
         if self.agent.mneme and self.agent.mneme.mneme:
             entries = [
                 ("Deployed model v0.3.2 with improved calibration", 0.8, ("deploy", "model")),
@@ -240,12 +266,10 @@ class DemoAgent:
                 self.agent.mneme.mneme.store(content, significance=sig, tags=tags)
 
     def tick(self):
-        """Simulate one agent tick with random feedback."""
+        """Execute one agent tick: apply feedback, process pillars."""
         with self._lock:
-            # Apply random feedback to simulate activity
             from isonome.types import Feedback, Pillar
             axes = list(self.agent.engine._axes.keys())
-            # 2-4 random feedbacks per tick
             for _ in range(random.randint(1, 3)):
                 axis_id = random.choice(axes)
                 pillar = self.agent.engine._axes[axis_id].pillar
@@ -256,14 +280,13 @@ class DemoAgent:
                     tension_axis_id=axis_id,
                     signal=signal,
                     confidence=random.uniform(0.3, 0.9),
-                    reason=f"demo tick feedback",
+                    reason="live tick feedback",
                 )
                 self.agent.engine.apply_feedback(fb)
 
             self.agent._tick_count += 1
             self.tick_count += 1
 
-            # Occasionally submit a task
             if self.tick_count % 15 == 0:
                 tasks = [
                     "Analyze the stability of equilibrium convergence",
@@ -276,7 +299,6 @@ class DemoAgent:
                 task = Task(description=random.choice(tasks))
                 self.agent.submit_task(task)
 
-            # Process pillars
             for pillar in self.agent._pillar_map.values():
                 pillar.process_queued()
 
@@ -290,8 +312,7 @@ class DemoAgent:
 class DashboardHandler(SimpleHTTPRequestHandler):
     """Serves dashboard files and API endpoints."""
 
-    demo: DemoAgent | None = None
-    agent: IsonomeAgent | None = None
+    live: LiveAgent | None = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(Path(__file__).parent), **kwargs)
@@ -299,19 +320,29 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/state":
             self._serve_state()
+        elif self.path == "/sim" or self.path == "/sim/":
+            self.path = "/sim.html"
+            super().do_GET()
+        elif self.path == "/api/sim/stream":
+            self._proxy_mjpeg()
         elif self.path == "/" or self.path == "/index.html":
             self.path = "/index.html"
             super().do_GET()
         else:
             super().do_GET()
 
+    def do_POST(self):
+        if self.path == "/api/upload-urdf":
+            self._upload_urdf()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
     def _serve_state(self):
         """Return current agent state as JSON."""
         try:
-            if self.demo is not None:
-                state = self.demo.get_state()
-            elif self.agent is not None:
-                state = extract_agent_state(self.agent)
+            if self.live is not None:
+                state = self.live.get_state()
             else:
                 state = {"error": "No agent configured"}
 
@@ -333,13 +364,145 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         """Suppress default logging."""
         pass
 
+    # ── Sim Scaffold Handlers ────────────────────────────────────
 
-# ── Demo ticker thread ───────────────────────────────────────────
+    def _upload_urdf(self) -> None:
+        """Handle URDF or ZIP upload, extract, return path."""
+        try:
+            content_type = self.headers.get("Content-Type", "")
+            if not content_type.startswith("multipart/form-data"):
+                self._send_json({"error": "Expected multipart/form-data"}, 400)
+                return
 
-def run_demo_ticker(demo: DemoAgent, interval: float = 1.5):
-    """Background thread that ticks the demo agent."""
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+
+            # Parse multipart using stdlib email parser
+            msg = BytesParser(policy=default).parsebytes(
+                b"Content-Type: " + content_type.encode() + b"\n\n" + body
+            )
+
+            file_bytes = None
+            filename = None
+            for part in msg.iter_parts():
+                if part.get_filename():
+                    file_bytes = part.get_payload(decode=True)
+                    filename = part.get_filename()
+                    break
+
+            if file_bytes is None or filename is None:
+                self._send_json({"error": "No file found in upload"}, 400)
+                return
+
+            # Save to temp dir
+            upload_path = SIM_UPLOAD_DIR / filename
+            upload_path.write_bytes(file_bytes)
+
+            # If ZIP, extract
+            if filename.lower().endswith(".zip"):
+                extract_dir = SIM_UPLOAD_DIR / filename[:-4]
+                extract_dir.mkdir(exist_ok=True)
+                with zipfile.ZipFile(upload_path, "r") as zf:
+                    zf.extractall(extract_dir)
+                # Find URDF inside
+                urdf_files = list(extract_dir.rglob("*.urdf"))
+                if not urdf_files:
+                    self._send_json({"error": "No .urdf found in ZIP archive"}, 400)
+                    return
+                urdf_path = urdf_files[0]
+            else:
+                urdf_path = upload_path
+
+            self._send_json({"ok": True, "path": str(urdf_path)})
+
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, 500)
+
+    def _proxy_mjpeg(self) -> None:
+        """Proxy MJPEG stream from Isaac Sim / mock bridge."""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5.0)
+            sock.connect((MJPEG_PROXY_HOST, MJPEG_PROXY_PORT))
+
+            # Request the MJPEG stream
+            request = (
+                f"GET / HTTP/1.1\r\n"
+                f"Host: {MJPEG_PROXY_HOST}:{MJPEG_PROXY_PORT}\r\n"
+                f"Connection: close\r\n\r\n"
+            )
+            sock.sendall(request.encode())
+
+            # Read response headers
+            header_data = b""
+            while b"\r\n\r\n" not in header_data:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                header_data += chunk
+
+            # Extract Content-Type from proxied response
+            headers_end = header_data.find(b"\r\n\r\n")
+            proxied_headers = header_data[:headers_end].decode("utf-8", errors="ignore")
+
+            content_type = "multipart/x-mixed-replace; boundary=frame"
+            for line in proxied_headers.split("\r\n"):
+                if line.lower().startswith("content-type:"):
+                    content_type = line.split(":", 1)[1].strip()
+                    break
+
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            # Forward any remaining body data from headers read
+            body_remainder = header_data[headers_end + 4 :]
+            if body_remainder:
+                self.wfile.write(body_remainder)
+
+            # Stream the rest
+            while True:
+                chunk = sock.recv(8192)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+
+        except (socket.error, ConnectionRefusedError) as exc:
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": f"Sim bridge unavailable: {exc}"}).encode())
+        except Exception as exc:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(exc)}).encode())
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def _send_json(self, data: dict, status: int = 200) -> None:
+        payload = json.dumps(data, default=str).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+# ── Live ticker thread ───────────────────────────────────────────
+
+def run_live_ticker(live: LiveAgent, interval: float = 1.0):
+    """Background thread that ticks the live agent."""
     while True:
-        demo.tick()
+        live.tick()
         time.sleep(interval)
 
 
@@ -348,28 +511,15 @@ def run_demo_ticker(demo: DemoAgent, interval: float = 1.5):
 def main():
     parser = argparse.ArgumentParser(description="Isonome Framework Dashboard")
     parser.add_argument("--port", type=int, default=8420, help="HTTP port (default: 8420)")
-    parser.add_argument("--demo", action="store_true", help="Run with simulated agent activity")
-    parser.add_argument("--tick-interval", type=float, default=1.5, help="Demo tick interval in seconds")
+    parser.add_argument("--tick-interval", type=float, default=1.0, help="Agent tick interval in seconds")
     args = parser.parse_args()
 
-    if args.demo:
-        print(f"Starting demo agent (tick interval: {args.tick_interval}s)")
-        demo = DemoAgent()
-        DashboardHandler.demo = demo
-        t = threading.Thread(target=run_demo_ticker, args=(demo, args.tick_interval), daemon=True)
-        t.start()
-        print("Demo ticker running in background")
-    else:
-        # Create a basic agent without demo
-        agent = IsonomeAgent(
-            name="dashboard-agent",
-            cognition=CognitionPillar(),
-            praxis=PraxisPillar(),
-            mneme=MnemePillar(),
-        )
-        agent.start()
-        DashboardHandler.agent = agent
-        print("Agent initialized (no demo — use --demo for simulated activity)")
+    print(f"Starting live agent (tick interval: {args.tick_interval}s)")
+    live = LiveAgent()
+    DashboardHandler.live = live
+    t = threading.Thread(target=run_live_ticker, args=(live, args.tick_interval), daemon=True)
+    t.start()
+    print("Live ticker running in background")
 
     server = HTTPServer(("0.0.0.0", args.port), DashboardHandler)
     print(f"Dashboard running at http://localhost:{args.port}")
