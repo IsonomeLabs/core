@@ -53,6 +53,12 @@ class MnemePillar(BasePillar):
         self.mneme: HierarchicalMneme | None = None
         self._cons_sig = consolidation_significance
         self._prom_sig = promotion_significance
+        self._last_recall_results: list | None = None
+
+    @property
+    def last_recall_results(self) -> list | None:
+        """Results from the most recent 'recall:<query>' signal."""
+        return self._last_recall_results
 
     # ── Abstract interface ──────────────────────────────────────
 
@@ -126,6 +132,22 @@ class MnemePillar(BasePillar):
             elif kind == "rehearse_by_tags":
                 tags = frozenset(payload.get("tags", []))
                 self.mneme.rehearse_by_tags(tags)
+
+            elif kind.startswith("recall:"):
+                # Handle 'recall:<query>' signal - extract query from kind suffix
+                query = kind[len("recall:"):]
+                max_results = int(payload.get("max_results", 10))
+                tier_filter = payload.get("tier_filter", None)
+                results = self.mneme.recall(
+                    query,
+                    max_results=max_results,
+                    tier_filter=tier_filter,
+                )
+                logger.info(
+                    f"{self.name}: recalled {len(results)} memories for '{query}'"
+                )
+                # Store results for caller inspection via last_recall_results
+                self._last_recall_results = results
 
             else:
                 logger.debug(f"{self.name}: unknown signal kind '{kind}'")

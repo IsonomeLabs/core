@@ -703,7 +703,11 @@ class CognitionPillar(BasePillar):
     # ── Internal ────────────────────────────────────────────────────
 
     def _emit_plan_ready(self, plan: Any) -> None:
-        """Emit feedback about plan quality to the equilibrium engine.
+        """Emit plan signal to Praxis and feedback about plan quality.
+
+        Two outputs:
+        1. Signal to Praxis with the plan's action items (νοῦς → πρᾶξις)
+        2. Feedback to equilibrium engine about plan quality
 
         High-confidence plans → push toward exploit (commit)
         Low-confidence plans → push toward explore (reconsider)
@@ -712,7 +716,24 @@ class CognitionPillar(BasePillar):
         if plan is None:
             return
 
-        # Plan confidence → explore/exploit modulation
+        # ── Signal to Praxis: send plan items for execution ──
+        try:
+            if plan.plans and plan.plans[0]:
+                plan_signal = Signal(
+                    source=Pillar.COGNITION,
+                    target=Pillar.PRAXIS,
+                    kind="import_plan",
+                    payload={"tasks": plan.plans[0]},
+                )
+                self._signal_queue.append(plan_signal)
+                logger.info(
+                    f"{self.name}: emitted plan_ready signal to Praxis "
+                    f"({len(plan.plans[0])} actions)"
+                )
+        except Exception:
+            logger.debug(f"{self.name}: could not emit plan signal to Praxis")
+
+        # ── Feedback to equilibrium: plan quality modulation ──
         try:
             best_conf = plan.best_confidence
             # High confidence: exploit more, converge
