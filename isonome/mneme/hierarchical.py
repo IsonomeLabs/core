@@ -337,8 +337,8 @@ class RehearsalScheduler:
         min_interval: float | None = None,
         max_interval: float | None = None,
     ):
-        self._min_interval = min_interval or self.MIN_INTERVAL
-        self._max_interval = max_interval or self.MAX_INTERVAL
+        self._min_interval = min_interval if min_interval is not None else self.MIN_INTERVAL
+        self._max_interval = max_interval if max_interval is not None else self.MAX_INTERVAL
         # Calibration state (updated each tick by the pillar wrapper)
         self._calibration_ece: float = 0.0
         self._calibration_bias: float = 0.0
@@ -547,15 +547,21 @@ class HierarchicalMneme:
         rehearsal_boost: float | None = None,
     ):
         self._consolidation_sig = (
-            consolidation_significance or self.DEFAULT_CONSOLIDATION_SIGNIFICANCE
+            consolidation_significance if consolidation_significance is not None
+            else self.DEFAULT_CONSOLIDATION_SIGNIFICANCE
         )
         self._promotion_sig = (
-            promotion_significance or self.DEFAULT_PROMOTION_SIGNIFICANCE
+            promotion_significance if promotion_significance is not None
+            else self.DEFAULT_PROMOTION_SIGNIFICANCE
         )
         self._pattern_threshold = (
-            pattern_count_threshold or self.DEFAULT_PATTERN_COUNT_THRESHOLD
+            pattern_count_threshold if pattern_count_threshold is not None
+            else self.DEFAULT_PATTERN_COUNT_THRESHOLD
         )
-        self._rehearsal_boost = rehearsal_boost or self.DEFAULT_REHEARSAL_BOOST
+        self._rehearsal_boost = (
+            rehearsal_boost if rehearsal_boost is not None
+            else self.DEFAULT_REHEARSAL_BOOST
+        )
 
         # Ordered access for LRU eviction in working memory
         self._working: OrderedDict[UUID, MemoryEntry] = OrderedDict()
@@ -840,77 +846,76 @@ class HierarchicalMneme:
 
         # Phase 4: Prune forgotten
         pruned = 0
-        for collection, counter_attr in [
-            (self._working, "forgotten_working"),
-            (self._episodic, "forgotten_episodic"),
-            (self._semantic, "forgotten_semantic"),
+        # Capture entries before deletion for potential calibration rescue
+        forgotten_entries: dict[str, list] = {
+            "working": [], "episodic": [], "semantic": [],
+        }
+        for collection, tier_name in [
+            (self._working, "working"),
+            (self._episodic, "episodic"),
+            (self._semantic, "semantic"),
         ]:
             to_remove = [
                 eid
                 for eid, entry in collection.items()
                 if entry.is_forgotten(self.FORGET_THRESHOLD)
             ]
+            # Capture before deletion for cross-tier rescue
             for eid in to_remove:
+                forgotten_entries[tier_name].append(collection[eid])
                 del collection[eid]
                 pruned += 1
-            if counter_attr == "forgotten_working":
-                pass  # count tracked via pruned counter
-            elif counter_attr == "forgotten_episodic":
-                pass  # count tracked via pruned counter
-            else:
-                pass  # count tracked via pruned counter
 
         # ── Calibration-aware pruning sensitivity ──
         # When the agent is overconfident, it underestimates how much
         # memorized content may still be needed. Reduce pruning rate
         # proportionally to how overconfident the system is.
-        #   λ = 1 - min(overconfident_bonus, 0.30)
-        #   pruned_effective = int(pruned × λ)
+        # λ = 1 - min(overconfident_bonus, 0.30)
+        # pruned_effective = int(pruned × λ)
         if self._calibration_total_predictions >= 10 and self._calibration_overconfident and pruned > 0:
             ece = self._calibration_ece
             overconfident_prune_discount = min(0.30, ece * 2.0)  # Up to 30% reduction
             reduced_prune = int(pruned * (1.0 - overconfident_prune_discount))
             spared = pruned - reduced_prune
             pruned = reduced_prune
-            # Re-add spared entries to working memory (they get a second chance)
-            # This creates a reserve pool — entries that OVERCONFIDENCE would have
-            # discarded but CALIBRATION saved.
-            if spared > 0 and counter_attr == "forgotten_working":
-                # Re-register spared entries into working memory at reduced strength
-                re_added = 0
-                for eid in list(self._working.keys()):
-                    if re_added >= spared:
-                        break
-                    entry = self._working.get(eid)
-                    if entry is not None and entry.strength < self.FORGET_THRESHOLD * 3:
-                        # Give it a small reprieve — boost just above the threshold
-                        self._working[eid] = MemoryEntry(
-                            id=entry.id,
-                            content=entry.content,
-                            tier=entry.tier,
-                            strength=self.FORGET_THRESHOLD * 1.5,
-                            significance=entry.significance,
-                            created_at=entry.created_at,
-                            last_accessed=entry.last_accessed,
-                            last_rehearsed=entry.last_rehearsed,
-                            rehearsal_count=entry.rehearsal_count,
-                            access_count=entry.access_count,
-                            source=entry.source,
-                            tags=entry.tags,
-                            metadata=entry.metadata,
-                            base_half_life=entry.base_half_life,
-                        )
-                        re_added += 1
-                if re_added > 0:
-                    calibration_prune_saved = re_added
-                else:
-                    calibration_prune_saved = 0
-            else:
-                calibration_prune_saved = 0
+            # Rescue spared entries: gather all forgotten across tiers, rescue
+            # the most significant ones back into working memory. This creates a
+            # "calibration reserve pool" — entries overconfidence would discard
+            # but calibration self-awareness saves.
+            all_forgotten = (
+                forgotten_entries["working"]
+                + forgotten_entries["episodic"]
+                + forgotten_entries["semantic"]
+            )
+            # Sort by significance descending — rescue most valuable first
+            all_forgotten.sort(key=lambda e: e.significance, reverse=True)
+            re_added = 0
+            for entry in all_forgotten:
+                if re_added >= spared:
+                    break
+                if entry.id not in self._working:
+                    rescued = MemoryEntry(
+                        id=entry.id,
+                        content=entry.content,
+                        tier=MemoryTier.WORKING,
+                        strength=self.FORGET_THRESHOLD * 1.5,
+                        significance=entry.significance,
+                        created_at=entry.created_at,
+                        last_accessed=entry.last_accessed,
+                        last_rehearsed=entry.last_rehearsed,
+                        rehearsal_count=entry.rehearsal_count,
+                        access_count=entry.access_count,
+                        source=entry.source,
+                        tags=entry.tags,
+                        metadata=entry.metadata,
+                        base_half_life=entry.base_half_life,
+                    )
+                    self._working[entry.id] = rescued
+                    re_added += 1
+            calibration_prune_saved = re_added
         else:
             overconfident_prune_discount = 0.0
             calibration_prune_saved = 0
-
         self._stats.total_pruned += pruned
 
         # Phase 5: Enforce capacity limits
@@ -1004,7 +1009,7 @@ class HierarchicalMneme:
         if entry is None:
             return None
 
-        rehearse_boost = boost or self._rehearsal_boost
+        rehearse_boost = boost if boost is not None else self._rehearsal_boost
         strengthened = entry.rehearse(boost=rehearse_boost)
         self._update_in_tier(strengthened)
         self._stats.total_rehearsals += 1
@@ -1045,7 +1050,7 @@ class HierarchicalMneme:
             # Overconfident: distributed rehearsal — more entries, smaller per-entry boost
             # Total rehearsal budget = len(entries) * base_boost
             # Distribute: all entries get reduced boost (~50% of normal)
-            base_boost = boost or self._rehearsal_boost
+            base_boost = boost if boost is not None else self._rehearsal_boost
             reduced_boost = base_boost * 0.5
             count = 0
             for entry in entries:
@@ -1056,7 +1061,7 @@ class HierarchicalMneme:
         elif calibration_active and self._calibration_underconfident and self._calibration_ece > 0.15:
             # Underconfident: uniform boost, slightly elevated
             # Compensates for undervaluing — give everything a fair rehearsal
-            base_boost = boost or self._rehearsal_boost
+            base_boost = boost if boost is not None else self._rehearsal_boost
             elevated_boost = base_boost * 1.3
             count = 0
             for entry in entries:
@@ -1067,7 +1072,7 @@ class HierarchicalMneme:
         elif calibration_active and self._calibration_ece <= 0.05:
             # Well-calibrated: significance-ranked prioritization
             # High-significance entries get a bonus, low-significance get skipped
-            base_boost = boost or self._rehearsal_boost
+            base_boost = boost if boost is not None else self._rehearsal_boost
             count = 0
             for entry in entries:
                 if entry.significance >= 0.7:
@@ -1082,7 +1087,7 @@ class HierarchicalMneme:
             return count
 
         # Default: standard uniform rehearsal
-        base_boost = boost or self._rehearsal_boost
+        base_boost = boost if boost is not None else self._rehearsal_boost
         count = 0
         for entry in entries:
             if self.rehearse(entry.id, boost=base_boost):
@@ -1163,7 +1168,7 @@ class HierarchicalMneme:
         if not candidates:
             return 0
 
-        base_boost = boost or self._rehearsal_boost
+        base_boost = boost if boost is not None else self._rehearsal_boost
         count = 0
         for entry in candidates:
             if self.rehearse(entry.id, boost=base_boost):

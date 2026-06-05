@@ -24,6 +24,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from types import MappingProxyType
 from typing import Any, Callable, Sequence
 from uuid import UUID, uuid4
 
@@ -201,11 +202,11 @@ class ActionOrchestrator:
     """
 
     # Default tension profile (used when no engine is available)
-    _DEFAULT_PROFILE: dict[TensionID, float] = {
+    _DEFAULT_PROFILE: MappingProxyType = MappingProxyType({
         "autonomy_safety": -0.4,
         "sequential_parallel": 0.1,
         "verify_execute": 0.0,
-    }
+    })
 
 
     def __init__(
@@ -718,9 +719,12 @@ class ActionOrchestrator:
         for i, task in enumerate(tasks):
             dep_refs = task.get("dependencies", ())
             if dep_refs:
-                resolved = tuple(
-                    id_map.get(r, actions[i].id) for r in dep_refs
-                )
+                resolved_deps = []
+                for r in dep_refs:
+                    if r in id_map:
+                        resolved_deps.append(id_map[r])
+                    # Unresolved dependency — skip rather than creating a self-cycle
+                resolved = tuple(resolved_deps)
                 # Rebuild with resolved deps
                 actions[i] = Action(
                     description=actions[i].description,
@@ -843,6 +847,7 @@ class ActionOrchestrator:
                 max_retries=adata.get("retry_max", 3),
                 base_delay=adata.get("retry_base_delay", 1.0),
                 backoff_factor=adata.get("retry_backoff", 2.0),
+                max_delay=adata.get("retry_max_delay", 300.0),
             )
             action = Action(
                 id=aid,

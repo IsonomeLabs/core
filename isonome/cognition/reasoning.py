@@ -33,6 +33,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from types import MappingProxyType
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -396,11 +397,11 @@ class ConfidenceCalibrator:
 
         if self.is_overconfident:
             self._evidence_weight = max(0.20, self._evidence_weight - 0.01)
-            self._child_weight = min(0.80, self._child_weight + 0.01)
+            self._child_weight = 1.0 - self._evidence_weight  # Invariant: sum == 1.0
             self._total_adjustments += 1
         elif self.is_underconfident:
             self._evidence_weight = min(0.80, self._evidence_weight + 0.01)
-            self._child_weight = max(0.20, self._child_weight - 0.01)
+            self._child_weight = 1.0 - self._evidence_weight  # Invariant: sum == 1.0
             self._total_adjustments += 1
         else:
             return False  # Well-calibrated, no adjustment needed
@@ -633,11 +634,11 @@ class RecursiveReasoningEngine:
     """
 
     # Default tension profile
-    _DEFAULT_PROFILE: dict[TensionID, float] = {
+    _DEFAULT_PROFILE: MappingProxyType = MappingProxyType({
         "shallow_deep": -0.2,
         "explore_exploit": 0.15,
         "divergent_convergent": 0.3,
-    }
+    })
 
     # Decomposition granularity thresholds
     MIN_HYPOTHESIS_LENGTH_FOR_DECOMPOSITION = 20  # chars
@@ -1136,10 +1137,10 @@ class RecursiveReasoningEngine:
 
         # Determine risk from confidence and hypothesis complexity
         risk = "low"
-        if node.confidence < 0.4:
-            risk = "moderate"
-        elif node.confidence < 0.2:
+        if node.confidence < 0.2:
             risk = "high"
+        elif node.confidence < 0.4:
+            risk = "moderate"
 
         # Generate actions from the hypothesis structure
         hyp = node.hypothesis
@@ -1385,8 +1386,11 @@ class RecursiveReasoningEngine:
         evidence_ratio = node.evidence_ratio
 
         if not node.children:
-            # Terminal: pure evidence-based
-            return evidence_ratio
+            # Terminal: evidence-based, scaled by calibrated weights
+            # Pure evidence_ratio ignores the calibrator entirely; this formula
+            # ensures weight adjustments propagate to leaf confidence estimates.
+            # The 0.5 baseline for child_weight represents "no child evidence" prior.
+            return evidence_ratio * w_ev + 0.5 * w_ch
 
         # Internal: blend evidence with children's confidence
         child_confs = [
