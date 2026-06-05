@@ -12,3 +12,6 @@ build/
 *.so
 *.dylib
 .claude-flow/
+
+# Excalidraw Copilot auto-saved diagrams
+.excalidraw-copilot/
