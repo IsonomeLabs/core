@@ -92,7 +92,7 @@ class CortexLayer(LayerBase):
                     CortexAdvice(
                         text=f"Motor 0 overshot by {delta:.2f}m. "
                         f"Reduce effective gain by {min(abs(delta) * 100, 50):.0f}%.",
-                        priority=2 if abs(delta) > 0.15 else 1,
+                        priority="high" if abs(delta) > 0.15 else "medium",
                     )
                 )
 
@@ -100,7 +100,7 @@ class CortexLayer(LayerBase):
             advice_list.append(
                 CortexAdvice(
                     text="Last execution failed. Consider a more conservative action.",
-                    priority=3,
+                    priority="critical",
                 )
             )
 

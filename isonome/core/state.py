@@ -91,10 +91,19 @@ class CorrectedMotorCommand(BaseModel):
 
 
 class CortexAdvice(BaseModel):
-    """Natural language advice from Cortex to JEPA."""
+    """Natural language advice from Cortex to JEPA.
+
+    Priority levels (ascending urgency):
+    - low: informational, no action needed
+    - medium: standard advisory (default)
+    - high: significant issue requiring attention
+    - critical: urgent safety or execution concern
+    """
 
     text: str
-    priority: int = 1  # Higher = prepend to prompt first
+    summary: str = ""  # Short summary for quick scanning
+    priority: Literal["low", "medium", "high", "critical"] = "medium"
+    target_layer: str = "jepa"  # Safety: only 'jepa' is valid from cortex
 
 
 class ExecutionResult(BaseModel):

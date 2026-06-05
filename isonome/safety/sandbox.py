@@ -28,10 +28,10 @@ class LLMSandbox:
             self._logger.error(
                 "sandbox_timeout", extra={"timeout_s": self._timeout_s}
             )
-            return CortexAdvice(summary="Sandbox timeout", priority="low")
+            return CortexAdvice(text="Sandbox timeout", summary="Sandbox timeout", priority="low")
         except Exception as e:
             self._logger.error("sandbox_error", extra={"error": str(e)})
-            return CortexAdvice(summary=f"Sandbox error: {e}", priority="low")
+            return CortexAdvice(text=f"Sandbox error: {e}", summary=f"Sandbox error: {e}", priority="low")
 
     def _validate(self, result) -> CortexAdvice:
         if isinstance(result, CortexAdvice):
@@ -41,14 +41,23 @@ class LLMSandbox:
                     "sandbox_invalid_target",
                     extra={"target": result.target_layer},
                 )
-                result.target_layer = "jepa"
+                # Reconstruct with corrected target_layer (immutable model)
+                return CortexAdvice(
+                    text=result.text,
+                    summary=result.summary,
+                    priority=result.priority,
+                    target_layer="jepa",
+                )
             return result
         # Try to parse as CortexAdvice
         if isinstance(result, dict):
+            # Ensure target_layer defaults to jepa for safety
+            if "target_layer" not in result:
+                result["target_layer"] = "jepa"
             return CortexAdvice(**result)
         if isinstance(result, str):
             try:
                 return CortexAdvice(**json.loads(result))
             except (json.JSONDecodeError, Exception):
-                return CortexAdvice(summary=result[:200], priority="low")
-        return CortexAdvice(summary="Invalid LLM output", priority="low")
+                return CortexAdvice(text=result[:200], summary=result[:200], priority="low")
+        return CortexAdvice(text="Invalid LLM output", summary="Invalid LLM output", priority="low")
