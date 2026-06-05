@@ -244,7 +244,8 @@ class TestBasePillarStressFeedback:
         """When the agent is stressed (high drift), stress feedback should appear."""
         p = CognitionPillar()
         p.initialize(_make_state())
-        # Create axes with large drift from defaults
+        # Create axes — the engine resets position to default_position in __init__,
+        # so we must apply feedback to create actual drift.
         axes = [
             TensionAxis(
                 id="explore_exploit",
@@ -252,12 +253,20 @@ class TestBasePillarStressFeedback:
                 pole_left="explore",
                 pole_right="exploit",
                 default_position=0.0,
-                position=0.8,  # Large drift
+                position=0.0,  # Will be set to default_position by engine
                 damping=0.4,
                 learning_rate=0.05,
             ),
         ]
         engine = EquilibriumEngine(axes=axes)
+        # Push the axis far from its default to create high stress
+        engine.apply_feedback(Feedback(
+            source=Pillar.COGNITION,
+            tension_axis_id="explore_exploit",
+            signal=0.8,  # Large push toward exploit
+            confidence=1.0,  # Full confidence for maximum effect
+            reason="test: push axis far from default",
+        ))
         p.bind_engine(engine)
         p.process_queued()
         drained = p.drain_feedback()
@@ -275,12 +284,20 @@ class TestBasePillarStressFeedback:
                 pole_left="explore",
                 pole_right="exploit",
                 default_position=0.0,
-                position=0.8,
+                position=0.0,  # Will be set to default_position by engine
                 damping=0.4,
                 learning_rate=0.05,
             ),
         ]
         engine = EquilibriumEngine(axes=axes)
+        # Push axis far from default (same as drifted test)
+        engine.apply_feedback(Feedback(
+            source=Pillar.COGNITION,
+            tension_axis_id="explore_exploit",
+            signal=0.8,
+            confidence=1.0,
+            reason="test: push axis far from default",
+        ))
         p.bind_engine(engine)
         p._stress_feedback_enabled = False
         p.process_queued()
