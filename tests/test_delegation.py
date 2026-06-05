@@ -20,6 +20,7 @@ from isonome.praxis.delegation import (
     DelegationDecision,
     DelegationGate,
     DelegationMode,
+    DelegationOutcome,
     DelegationRecord,
 )
 from isonome.praxis.orchestrator import (
