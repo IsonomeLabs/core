@@ -256,6 +256,23 @@ class PraxisPillar(BasePillar):
         # Emit feedback for each Praxis tension axis
         self._emit_execution_feedback(self._last_report)
 
+        # ── Emit execution_results signal to Mneme (πρᾶξις → μνήμη) ──
+        # After every batch with actions, send execution log entries to Mneme
+        # for cross-session learning. Only emit if there were executions.
+        if self._last_report.actions_total > 0:
+            execution_memories = self.orchestrator.export_to_mneme()
+            if execution_memories:
+                self._signal_queue.append(Signal(
+                    source=Pillar.PRAXIS,
+                    target=Pillar.MNEME,
+                    kind="execution_results",
+                    payload={"entries": execution_memories},
+                ))
+                logger.info(
+                    f"{self.name}: emitted execution_results signal to Mneme "
+                    f"({len(execution_memories)} entries)"
+                )
+
     # ── Feedback ──────────────────────────────────────────────────
 
     def _emit_execution_feedback(self, report: ExecutionReport) -> None:

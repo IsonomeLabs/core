@@ -144,16 +144,71 @@ class MnemePillar(BasePillar):
                     tier_filter=tier_filter,
                 )
                 logger.info(
-                    f"{self.name}: recalled {len(results)} memories for '{query}'"
+                    f"{self.name}: recalled {len(results)} memories "
+                    f"for '{query}'"
                 )
                 # Store results for caller inspection via last_recall_results
                 self._last_recall_results = results
 
+            elif kind == "execution_results":
+                # Handle Praxis → Mneme pipeline: store execution outcomes
+                # as memories for cross-session learning.
+                entries = payload.get("entries", [])
+                stored_count = 0
+                for entry in entries:
+                    # Compute significance from execution outcome:
+                    # - Success → high significance (confirmed patterns)
+                    # - Failure → moderate significance (learning signal)
+                    # - Validation score further modulates significance
+                    is_success = entry.get("success", False)
+                    base_sig = 0.7 if is_success else 0.4
+                    val_score = entry.get("validation_score")
+                    if val_score is not None and isinstance(
+                        val_score, (int, float)
+                    ):
+                        significance = min(1.0, base_sig + val_score * 0.2)
+                    else:
+                        significance = base_sig
+
+                    # Build content string from execution entry
+                    desc = entry.get("description", "unknown")
+                    tool = entry.get("tool_name", "unknown")
+                    status = "succeeded" if is_success else "failed"
+                    content = f"Action '{desc}' ({tool}) {status}"
+                    error = entry.get("error")
+                    if error:
+                        content += f": {error}"
+
+                    # Tags capture action metadata for recall
+                    tags = (
+                        "execution",
+                        tool,
+                        "success" if is_success else "failure",
+                        f"batch-{entry.get('batch', 0)}",
+                    )
+
+                    self.mneme.store(
+                        content,
+                        significance=significance,
+                        tags=tags,
+                        source="praxis:execution_results",
+                    )
+                    stored_count += 1
+
+                logger.info(
+                    f"{self.name}: stored {stored_count} execution "
+                    f"memories from Praxis"
+                )
+
             else:
-                logger.debug(f"{self.name}: unknown signal kind '{kind}'")
+                logger.debug(
+                    f"{self.name}: unknown signal kind '{kind}'"
+                )
 
         except Exception:
-            logger.exception(f"{self.name}: error handling signal {kind}")
+            logger.exception(
+                f"{self.name}: error handling signal {kind}"
+            )
 
     def _on_shutdown(self) -> None:
         """Serialize memory state for potential cross-session persistence."""
