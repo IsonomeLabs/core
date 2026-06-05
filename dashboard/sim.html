@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ISONOME SIM SCAFFOLD</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #111111;
+    --surface2: #1a1a1a;
+    --border: #333333;
+    --border-bright: #555555;
+    --text: #c0c0c0;
+    --text-dim: #666666;
+    --text-bright: #e0e0e0;
+    --accent-amber: #ffaa00;
+    --accent-cyan: #00aaaa;
+    --accent-red: #cc3333;
+    --accent-green: #33aa33;
+    --grid: #1e1e1e;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    font-family: "SF Mono", "Cascadia Code", "Consolas", "Liberation Mono", monospace;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  /* ── Layout ──────────────────────────────────────────── */
+  .app {
+    display: grid;
+    grid-template-rows: 32px 1fr 24px;
+    height: 100vh;
+  }
+
+  /* ── Title Bar ───────────────────────────────────────── */
+  .titlebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .titlebar-left { display: flex; align-items: center; gap: 16px; }
+  .titlebar-right { display: flex; align-items: center; gap: 16px; }
+  .titlebar a {
+    color: var(--text-dim);
+    text-decoration: none;
+    border: 1px solid var(--border);
+    padding: 2px 8px;
+  }
+  .titlebar a:hover { color: var(--accent-cyan); border-color: var(--accent-cyan); }
+  .titlebar .system { color: var(--accent-amber); }
+
+  .indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
+  .indicator::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    background: var(--text-dim);
+  }
+  .indicator.ok::before { background: var(--accent-green); }
+  .indicator.warn::before { background: var(--accent-amber); }
+  .indicator.err::before { background: var(--accent-red); }
+
+  /* ── Main Grid ───────────────────────────────────────── */
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* ── Viewport ────────────────────────────────────────── */
+  .viewport-col {
+    display: grid;
+    grid-template-rows: 1fr auto;
+    border-right: 1px solid var(--border);
+  }
+  .viewport {
+    background: var(--surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .viewport img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: none;
+  }
+  .viewport-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-dim);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .viewport-placeholder .box {
+    width: 64px;
+    height: 48px;
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-size: 10px;
+  }
+
+  /* ── Toolbar ─────────────────────────────────────────── */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 4px;
+  }
+  .toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    padding: 0 8px;
+    border-right: 1px solid var(--border);
+  }
+  .toolbar-group:last-child { border-right: none; }
+
+  .btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 4px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn:hover { background: #222; border-color: var(--border-bright); }
+  .btn:active { background: #1a1a1a; }
+  .btn:disabled { color: var(--text-dim); cursor: not-allowed; }
+  .btn.primary { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+  .btn.danger { border-color: var(--accent-red); color: var(--accent-red); }
+
+  input[type="file"] { display: none; }
+
+  .status-text {
+    font-size: 11px;
+    color: var(--text-dim);
+    min-width: 160px;
+  }
+
+  /* ── Sidebar ─────────────────────────────────────────── */
+  .sidebar {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .sidebar-header {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .joint-table {
+    overflow-y: auto;
+    font-size: 11px;
+  }
+  .joint-table::-webkit-scrollbar { width: 4px; }
+  .joint-table::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .joint-row {
+    display: grid;
+    grid-template-columns: 90px 1fr 60px 50px;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-bottom: 1px solid var(--grid);
+  }
+  .joint-row:nth-child(even) { background: #0f0f0f; }
+  .joint-row:hover { background: #1e1e1e; }
+
+  .joint-name {
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .joint-bar {
+    position: relative;
+    height: 10px;
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+  }
+  .joint-bar-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: var(--accent-cyan);
+    opacity: 0.7;
+  }
+  .joint-bar-zero {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--border-bright);
+  }
+  .joint-pos {
+    text-align: right;
+    color: var(--text-bright);
+  }
+  .joint-vel {
+    text-align: right;
+    color: var(--text-dim);
+    font-size: 10px;
+  }
+
+  .sidebar-footer {
+    padding: 4px 10px;
+    border-top: 1px solid var(--border);
+    font-size: 10px;
+    color: var(--text-dim);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* ── Status Bar ──────────────────────────────────────── */
+  .statusbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .statusbar-left, .statusbar-right { display: flex; gap: 16px; }
+  .statusbar .val { color: var(--text-bright); }
+
+  /* ── Panel grid overlay for industrial feel ──────────── */
+  .grid-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(to right, var(--grid) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
+    background-size: 40px 40px;
+    opacity: 0.3;
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- Title Bar -->
+  <div class="titlebar">
+    <div class="titlebar-left">
+      <a href="/">[DASHBOARD]</a>
+      <span class="system">ISONOME / SIM_SCAFFOLD</span>
+    </div>
+    <div class="titlebar-right">
+      <span class="indicator" id="conn-status">BRIDGE OFFLINE</span>
+      <span class="indicator" id="sim-status">SIM STOPPED</span>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- Viewport -->
+    <div class="viewport-col">
+      <div class="viewport">
+        <div class="grid-overlay"></div>
+        <img id="stream-img" alt="SIM STREAM">
+        <div id="stream-placeholder" class="viewport-placeholder">
+          <div class="box">NO SIGNAL</div>
+          <span>Upload URDF to initialize simulation</span>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-group">
+          <label for="upload-input" class="btn primary">SELECT FILE</label>
+          <input type="file" id="upload-input" accept=".urdf,.zip">
+          <button id="upload-btn" class="btn">LOAD</button>
+          <span id="upload-status" class="status-text">NO FILE</span>
+        </div>
+        <div class="toolbar-group">
+          <button id="btn-play" class="btn">PLAY</button>
+          <button id="btn-pause" class="btn">PAUSE</button>
+          <button id="btn-step" class="btn">STEP</button>
+          <button id="btn-reset" class="btn danger">RESET</button>
+        </div>
+        <div style="flex:1"></div>
+        <div class="toolbar-group">
+          <span id="dof-display" class="status-text">DOF: —</span>
+          <span id="time-display" class="status-text">T: —</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <span>JOINT STATES</span>
+        <span id="joint-count">0</span>
+      </div>
+      <div class="joint-table" id="joint-list">
+        <div style="padding: 20px; text-align: center; color: var(--text-dim); font-size: 11px; text-transform: uppercase;">
+          No robot loaded
+        </div>
+      </div>
+      <div class="sidebar-footer">
+        <span>UNIT: RAD</span>
+        <span id="poll-rate">POLL: 100MS</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Status Bar -->
+  <div class="statusbar">
+    <div class="statusbar-left">
+      <span>WS: <span class="val" id="ws-addr">localhost:8765</span></span>
+      <span>MJPEG: <span class="val" id="mjpeg-addr">localhost:8766</span></span>
+    </div>
+    <div class="statusbar-right">
+      <span>UPLOAD_DIR: <span class="val" id="upload-dir">/tmp/isonome_uploads</span></span>
+    </div>
+  </div>
+
+</div>
+
+<script src="isaac_client.js"></script>
+</body>
+</html>
