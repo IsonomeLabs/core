@@ -555,3 +555,185 @@ class TestFrozendict:
         assert h1 == h2
         # Internal hash cache should be set
         assert fd._hash is not None
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 5. Cross-pillar: Delegation Outcome Feedback Loop (iter-020)
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestDelegationOutcomeFeedbackLoop:
+    """Tests for the delegation → calibrator feedback loop.
+
+    Verifies that:
+    1. Delegated action outcomes flow back to the calibrator
+    2. The calibrator's ECE changes in response to outcome feedback
+    3. The delegation gate's threshold adapts based on outcome accuracy
+    4. The full loop: poor calibration → delegation → outcome →
+       calibrator update → improved calibration → fewer delegations
+    """
+
+    @pytest.fixture
+    def calibrator(self):
+        """A real ConfidenceCalibrator for integration testing."""
+        return ConfidenceCalibrator(num_bins=10, window_size=200)
+
+    @pytest.fixture
+    def gate(self, calibrator):
+        """A DelegationGate with a real calibrator attached."""
+        from isonome.praxis.delegation import DelegationGate, DelegationOutcome
+        return DelegationGate(
+            calibrator=calibrator,
+            ece_threshold=0.15,
+            adaptation_rate=0.05,  # Faster for testing
+            outcome_window=20,
+        )
+
+    def test_successful_outcome_feeds_calibrator(self, calibrator, gate):
+        """A successful delegation outcome should feed (confidence, True) to calibrator."""
+        from isonome.praxis.delegation import DelegationOutcome, DelegationMode
+        initial_preds = calibrator.total_predictions
+
+        gate.record_outcome(DelegationOutcome(
+            action_id=Action(description="test", tool_name="t", risk=ActionRisk.HIGH).id,
+            action_description="test",
+            action_risk=3,
+            predicted_confidence=0.6,
+            actual_success=True,
+            delegated_mode=DelegationMode.OVERCONFIDENT,
+            ece_at_delegation=0.2,
+        ))
+
+        assert calibrator.total_predictions == initial_preds + 1
+
+    def test_failed_outcome_feeds_calibrator(self, calibrator, gate):
+        """A failed delegation outcome should feed (confidence, False) to calibrator."""
+        from isonome.praxis.delegation import DelegationOutcome, DelegationMode
+        initial_preds = calibrator.total_predictions
+
+        gate.record_outcome(DelegationOutcome(
+            action_id=Action(description="test", tool_name="t", risk=ActionRisk.HIGH).id,
+            action_description="test",
+            action_risk=3,
+            predicted_confidence=0.8,
+            actual_success=False,
+            delegated_mode=DelegationMode.OVERCONFIDENT,
+            ece_at_delegation=0.2,
+        ))
+
+        assert calibrator.total_predictions == initial_preds + 1
+
+    def test_outcome_feedback_changes_ece(self, calibrator, gate):
+        """Recording many outcomes through the gate should shift the calibrator.
+
+        We first prime the calibrator with (0.8, True) pairs (creating
+        overconfidence), then feed (0.8, False) outcomes through the gate
+        to correct the calibration. ECE should shift.
+        """
+        from isonome.praxis.delegation import DelegationOutcome, DelegationMode
+
+        # Prime calibrator with overconfident predictions
+        for _ in range(15):
+            calibrator.record(0.8, True)
+        initial_ece = calibrator.compute_ece()
+
+        # Feed corrective outcomes through the gate: predicted 0.8 but failed
+        for _ in range(15):
+            gate.record_outcome(DelegationOutcome(
+                action_id=Action(description="test", tool_name="t", risk=ActionRisk.HIGH).id,
+                action_description="test",
+                action_risk=3,
+                predicted_confidence=0.8,
+                actual_success=False,
+                delegated_mode=DelegationMode.OVERCONFIDENT,
+                ece_at_delegation=0.2,
+            ))
+
+        new_ece = calibrator.compute_ece()
+        # ECE should have changed because the 0.7-0.8 bin accuracy shifted
+        assert new_ece != pytest.approx(initial_ece)
+
+    def test_high_accuracy_tightens_threshold(self, calibrator, gate):
+        """When most delegated actions succeed, the threshold should tighten."""
+        from isonome.praxis.delegation import DelegationOutcome, DelegationMode
+
+        initial_threshold = gate.ece_threshold
+
+        # Record many successful outcomes (accuracy > 0.8)
+        for _ in range(10):
+            gate.record_outcome(DelegationOutcome(
+                action_id=Action(description="test", tool_name="t", risk=ActionRisk.HIGH).id,
+                action_description="test",
+                action_risk=3,
+                predicted_confidence=0.5,
+                actual_success=True,
+                delegated_mode=DelegationMode.OVERCONFIDENT,
+                ece_at_delegation=0.2,
+            ))
+
+        assert gate.ece_threshold < initial_threshold
+
+    def test_low_accuracy_loosens_threshold(self, calibrator, gate):
+        """When most delegated actions fail, the threshold should loosen."""
+        from isonome.praxis.delegation import DelegationOutcome, DelegationMode
+
+        initial_threshold = gate.ece_threshold
+
+        # Record many failed outcomes (accuracy < 0.5)
+        for _ in range(10):
+            gate.record_outcome(DelegationOutcome(
+                action_id=Action(description="test", tool_name="t", risk=ActionRisk.HIGH).id,
+                action_description="test",
+                action_risk=3,
+                predicted_confidence=0.5,
+                actual_success=False,
+                delegated_mode=DelegationMode.OVERCONFIDENT,
+                ece_at_delegation=0.2,
+            ))
+
+        assert gate.ece_threshold > initial_threshold
+
+    def test_feedback_disabled_does_not_affect_calibrator(self, calibrator, gate):
+        """When feedback_to_calibrator=False, calibrator should not be updated."""
+        from isonome.praxis.delegation import DelegationOutcome, DelegationMode
+        initial_preds = calibrator.total_predictions
+
+        gate.record_outcome(DelegationOutcome(
+            action_id=Action(description="test", tool_name="t", risk=ActionRisk.HIGH).id,
+            action_description="test",
+            action_risk=3,
+            predicted_confidence=0.5,
+            actual_success=True,
+            delegated_mode=DelegationMode.OVERCONFIDENT,
+            ece_at_delegation=0.2,
+            feedback_to_calibrator=False,
+        ))
+
+        assert calibrator.total_predictions == initial_preds
+
+    def test_full_delegation_loop_serialization(self, calibrator, gate):
+        """Delegation outcomes + adapted threshold should survive serialization."""
+        from isonome.praxis.delegation import DelegationGate as _Gate
+        from isonome.praxis.delegation import DelegationOutcome, DelegationMode
+
+        # Record some outcomes
+        for success in [True, True, True, False, True]:
+            gate.record_outcome(DelegationOutcome(
+                action_id=Action(description="test", tool_name="t", risk=ActionRisk.HIGH).id,
+                action_description="test",
+                action_risk=3,
+                predicted_confidence=0.5,
+                actual_success=success,
+                delegated_mode=DelegationMode.OVERCONFIDENT,
+                ece_at_delegation=0.2,
+            ))
+
+        adapted_threshold = gate.ece_threshold
+        data = gate.to_dict()
+
+        # Restore with a fresh calibrator (simulating cross-session)
+        restored = _Gate.from_dict(data, calibrator=ConfidenceCalibrator())
+        assert restored.ece_threshold == pytest.approx(adapted_threshold)
+        assert len(restored._outcomes) == 5
+        assert restored._total_successful_delegations == 4
+        assert restored._total_failed_delegations == 1
