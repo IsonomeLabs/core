@@ -10,6 +10,7 @@ from isonome.cognition.attention import (
     AttentionBudget,
     AttentionChunk,
     AttentionEquilibriumSystem,
+    BudgetEnforcementPolicy,
     GarbageCollectionReport,
     RetentionDecision,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "AttentionBudget",
     "AttentionChunk",
     "AttentionEquilibriumSystem",
+    "BudgetEnforcementPolicy",
     "GarbageCollectionReport",
     "RetentionDecision",
     # Reasoning

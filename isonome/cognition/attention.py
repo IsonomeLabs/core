@@ -47,6 +47,21 @@ class RetentionDecision(Enum):
     PRUNE = auto()  # Remove entirely — low attention score
 
 
+class BudgetEnforcementPolicy(Enum):
+    """How to handle chunks when the context window budget is full.
+
+    - REJECT: Silently drop new chunks that don't fit. No auto-GC.
+    - AUTO_GC: Automatically run garbage collection to free space.
+      If GC doesn't free enough, reject the chunk.
+    - AUTO_COMPRESS: Like AUTO_GC, but also compress the incoming
+      chunk if it still doesn't fit after GC.
+    """
+
+    REJECT = "reject"
+    AUTO_GC = "auto_gc"
+    AUTO_COMPRESS = "auto_compress"
+
+
 @dataclass(frozen=True, slots=True)
 class AttentionChunk:
     """A single chunk of context being managed by the attention system.
@@ -171,6 +186,8 @@ class AttentionEquilibriumSystem:
         compress_ratio: float = 0.20,
         keep_threshold: float = 0.65,
         prune_threshold: float = 0.25,
+        enforcement_policy: BudgetEnforcementPolicy = BudgetEnforcementPolicy.AUTO_GC,
+        enforcement_threshold: float = 0.85,
     ):
         """Initialize the attention equilibrium system.
 
@@ -180,6 +197,9 @@ class AttentionEquilibriumSystem:
             compress_ratio: Target compression ratio (fraction of original).
             keep_threshold: Minimum score to retain verbatim.
             prune_threshold: Below this, chunks are pruned.
+            enforcement_policy: How to handle budget overflow when adding chunks.
+            enforcement_threshold: Utilization fraction [0.1, 1.0] at which
+                enforce_budget() triggers auto-GC. Default 0.85 (85% full).
         """
         self._engine = engine
         self._budget = AttentionBudget(token_capacity=token_capacity)
@@ -187,6 +207,17 @@ class AttentionEquilibriumSystem:
         self._compress_ratio = compress_ratio
         self._keep_threshold = keep_threshold
         self._prune_threshold = prune_threshold
+
+        # Budget enforcement
+        self._enforcement_policy = enforcement_policy
+        self._enforcement_threshold = max(0.1, min(1.0, enforcement_threshold))
+
+        # Enforcement statistics
+        self._enforcement_auto_gc_triggered: int = 0
+        self._enforcement_rejections: int = 0
+        self._enforcement_auto_compressions: int = 0
+        self._enforcement_oversized_rejections: int = 0
+        self._enforcement_post_gc_rejections: int = 0
 
         # Statistics
         self._total_pruned: int = 0
@@ -218,11 +249,13 @@ class AttentionEquilibriumSystem:
         mutual_info: float = 0.0,
         task_relevance: float = 0.5,
         importance_tags: tuple[str, ...] = (),
-    ) -> AttentionChunk:
+    ) -> AttentionChunk | None:
         """Register a new chunk of context.
 
         Automatically computes surprisal based on prior context and
-        assigns recency = 1.0 (newest).
+        assigns recency = 1.0 (newest). Budget-aware: if the chunk
+        would exceed capacity, the enforcement policy determines
+        the response (auto-GC, reject, or auto-compress).
 
         Args:
             content: The text content of the chunk.
@@ -232,10 +265,61 @@ class AttentionEquilibriumSystem:
             importance_tags: Tags marking explicit importance.
 
         Returns:
-            The created AttentionChunk.
+            The created AttentionChunk, or None if rejected by
+            budget enforcement.
         """
         if token_count is None:
             token_count = self._estimate_tokens(content)
+
+        # ── Budget enforcement ──
+        # 1. Oversized: chunk exceeds total capacity → always reject
+        if token_count > self._budget.token_capacity:
+            self._enforcement_oversized_rejections += 1
+            return None
+
+        # 2. Check if there's room (or if enforcement threshold is exceeded)
+        needs_enforcement = (
+            self._budget.tokens_used + token_count > self._budget.token_capacity
+            or self._budget.utilization >= self._enforcement_threshold
+        )
+
+        if needs_enforcement and token_count > 0:
+            policy = self._enforcement_policy
+
+            if policy == BudgetEnforcementPolicy.REJECT:
+                # Check if chunk would exceed capacity
+                if self._budget.tokens_used + token_count > self._budget.token_capacity:
+                    self._enforcement_rejections += 1
+                    return None
+                # Under threshold: no enforcement needed yet
+                # but above threshold: still reject if over capacity
+                if self._budget.utilization >= self._enforcement_threshold:
+                    if self._budget.tokens_used + token_count > self._budget.token_capacity:
+                        self._enforcement_rejections += 1
+                        return None
+
+            elif policy in (BudgetEnforcementPolicy.AUTO_GC, BudgetEnforcementPolicy.AUTO_COMPRESS):
+                # Try to free space via auto-GC
+                if self._budget.utilization >= self._enforcement_threshold:
+                    self._enforcement_auto_gc_triggered += 1
+                    self.collect_garbage()
+
+                # Check if GC freed enough space
+                if self._budget.tokens_used + token_count > self._budget.token_capacity:
+                    if policy == BudgetEnforcementPolicy.AUTO_COMPRESS:
+                        # Try to compress the incoming chunk
+                        compressed_tokens = int(token_count * self._compress_ratio)
+                        if self._budget.tokens_used + compressed_tokens <= self._budget.token_capacity:
+                            token_count = compressed_tokens
+                            self._enforcement_auto_compressions += 1
+                        else:
+                            # Even compressed doesn't fit
+                            self._enforcement_post_gc_rejections += 1
+                            return None
+                    else:
+                        # AUTO_GC: reject if still no room after GC
+                        self._enforcement_post_gc_rejections += 1
+                        return None
 
         # Update frequencies FIRST so repeated content gets low surprisal
         self._update_token_frequencies(content)
@@ -616,12 +700,66 @@ class AttentionEquilibriumSystem:
             "total_compressed": self._total_compressed,
             "total_pruned": self._total_pruned,
             "entropy_estimate": round(self._estimate_entropy(), 4),
+            "enforcement": {
+                "policy": self._enforcement_policy.value,
+                "threshold": self._enforcement_threshold,
+                "auto_gc_triggered": self._enforcement_auto_gc_triggered,
+                "rejections": self._enforcement_rejections,
+                "auto_compressions": self._enforcement_auto_compressions,
+                "oversized_rejections": self._enforcement_oversized_rejections,
+                "post_gc_rejections": self._enforcement_post_gc_rejections,
+            },
         }
 
     @property
     def equilibrium_chunks(self) -> tuple[AttentionChunk, ...]:
         """All current chunks (immutable view)."""
         return tuple(self._chunks.values())
+
+    # ── Budget enforcement ──────────────────────────────────────
+
+    def enforce_budget(self) -> GarbageCollectionReport | None:
+        """Enforce the context window budget by triggering GC if needed.
+
+        If the current utilization exceeds the enforcement threshold
+        and the policy allows auto-GC (AUTO_GC or AUTO_COMPRESS),
+        runs a garbage collection cycle to free space.
+
+        Returns:
+            A GarbageCollectionReport if GC was triggered, else None.
+        """
+        if self._budget.utilization < self._enforcement_threshold:
+            return None
+
+        if self._enforcement_policy == BudgetEnforcementPolicy.REJECT:
+            return None
+
+        # AUTO_GC or AUTO_COMPRESS: trigger GC
+        self._enforcement_auto_gc_triggered += 1
+        return self.collect_garbage()
+
+    @property
+    def enforcement_policy(self) -> BudgetEnforcementPolicy:
+        """Current budget enforcement policy."""
+        return self._enforcement_policy
+
+    @property
+    def enforcement_threshold(self) -> float:
+        """Utilization threshold at which auto-GC triggers."""
+        return self._enforcement_threshold
+
+    @property
+    def enforcement_stats(self) -> dict:
+        """Enforcement-specific statistics."""
+        return {
+            "policy": self._enforcement_policy.value,
+            "threshold": self._enforcement_threshold,
+            "auto_gc_triggered": self._enforcement_auto_gc_triggered,
+            "rejections": self._enforcement_rejections,
+            "auto_compressions": self._enforcement_auto_compressions,
+            "oversized_rejections": self._enforcement_oversized_rejections,
+            "post_gc_rejections": self._enforcement_post_gc_rejections,
+        }
 
     # ── Tension modulation ──────────────────────────────────────
 
