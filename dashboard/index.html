@@ -414,7 +414,97 @@
   .mneme-op-label { color: var(--text-dim); }
   .mneme-op-value { font-family: inherit; }
 
-  /* ── Responsive ──────────────────────────────────────── */
+  /* ── Velocity / Momentum ─────────────────────────────── */
+.velocity-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+.velocity-row {
+  display: grid;
+  grid-template-columns: 140px 1fr 64px 48px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  background: var(--surface2);
+}
+.velocity-label {
+  font-size: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.velocity-axis-name {
+  font-weight: 600;
+  font-size: 10px;
+}
+.velocity-axis-poles {
+  font-size: 8px;
+  color: var(--text-dim);
+  display: flex;
+  justify-content: space-between;
+}
+.sparkline-container {
+  position: relative;
+  height: 20px;
+  background: #0a0a0a;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.sparkline-container svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.velocity-value {
+  font-family: inherit;
+  font-size: 10px;
+  text-align: right;
+  font-weight: 500;
+}
+.momentum-indicator {
+  font-family: inherit;
+  font-size: 10px;
+  text-align: center;
+  font-weight: 700;
+  width: 36px;
+  height: 18px;
+  line-height: 18px;
+  border: 1px solid var(--border);
+  display: inline-block;
+}
+.momentum-positive { color: var(--accent-green); border-color: var(--accent-green); }
+.momentum-negative { color: var(--accent-red); border-color: var(--accent-red); }
+.momentum-neutral { color: var(--text-dim); border-color: var(--border); }
+.velocity-summary-row {
+  display: flex;
+  gap: 24px;
+  margin-top: 8px;
+  justify-content: center;
+}
+.velocity-summary-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.velocity-summary-num {
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-bright);
+}
+.velocity-summary-label {
+  font-size: 9px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.pillar-cognition .velocity-axis-name { color: var(--accent-cyan); }
+.pillar-praxis .velocity-axis-name { color: var(--accent-amber); }
+.pillar-mneme .velocity-axis-name { color: var(--accent-green); }
+
+/* ── Responsive ──────────────────────────────────────── */
   @media (max-width: 900px) {
     .dashboard { grid-template-columns: 1fr; }
     .pillar-panels { grid-template-columns: 1fr; }
@@ -544,6 +634,22 @@
     </div>
   </div>
 
+  <!-- Velocity & Momentum -->
+  <div class="panel panel-wide">
+    <div class="panel-title">TENSION VELOCITY & MOMENTUM</div>
+    <div class="velocity-grid" id="velocity-grid"></div>
+    <div class="velocity-summary-row">
+      <div class="velocity-summary-item">
+        <span id="vel-total-reversals" class="velocity-summary-num">0</span>
+        <span class="velocity-summary-label">Reversals</span>
+      </div>
+      <div class="velocity-summary-item">
+        <span id="vel-total-updates" class="velocity-summary-num">0</span>
+        <span class="velocity-summary-label">Updates</span>
+      </div>
+    </div>
+  </div>
+
   <!-- Attention Budget -->
   <div class="panel">
     <div class="panel-title">ATTENTION BUDGET</div>
@@ -640,6 +746,7 @@ function render(state) {
   renderTensions(state);
   renderStress(state);
   renderPillars(state);
+  renderVelocity(state);
   renderAttention(state);
   renderMneme(state);
   renderCalibration(state);
@@ -775,6 +882,100 @@ function renderPillars(state) {
 
     document.getElementById(ids.init).textContent = data.initialized ? "OK" : "NO";
   }
+}
+
+function renderVelocity(state) {
+  const grid = document.getElementById("velocity-grid");
+  const axes = state.tensions.axes || [];
+  const oscillating = new Set(state.tensions.oscillating || []);
+
+  // Build rows on first render or if axis count changes
+  if (grid.children.length !== axes.length) {
+    grid.innerHTML = "";
+    for (const axis of axes) {
+      const div = document.createElement("div");
+      div.className = "velocity-row pillar-" + axis.pillar;
+      div.id = "vel-row-" + axis.id;
+      div.innerHTML = `
+        <div class="velocity-label">
+          <span class="velocity-axis-name">${axis.id.replace(/_/g, " &lt;-&gt; ")}</span>
+          <div class="velocity-axis-poles">
+            <span>${axis.pole_left}</span>
+            <span>${axis.pole_right}</span>
+          </div>
+        </div>
+        <div class="sparkline-container" id="spark-${axis.id}"></div>
+        <div class="velocity-value" id="vel-val-${axis.id}">0.000</div>
+        <div class="momentum-indicator momentum-neutral" id="mom-${axis.id}">•</div>
+      `;
+      grid.appendChild(div);
+    }
+  }
+
+  // Update each axis row
+  for (const axis of axes) {
+    const sparkEl = document.getElementById("spark-" + axis.id);
+    const valEl = document.getElementById("vel-val-" + axis.id);
+    const momEl = document.getElementById("mom-" + axis.id);
+    if (!sparkEl) continue;
+
+    // Render sparkline from position_history
+    const hist = axis.position_history || [];
+    if (hist.length >= 2) {
+      const strokeColor = axis.pillar === "cognition" ? "var(--accent-cyan)" : axis.pillar === "praxis" ? "var(--accent-amber)" : "var(--accent-green)";
+      sparkEl.innerHTML = buildSparkline(hist, axis.default_position, strokeColor);
+    }
+
+    // Velocity value
+    const vel = axis.velocity || 0;
+    valEl.textContent = vel.toFixed(4);
+    if (vel > 0.01) valEl.style.color = "var(--accent-amber)";
+    else if (vel < -0.01) valEl.style.color = "var(--accent-cyan)";
+    else valEl.style.color = "var(--text-dim)";
+
+    // Momentum indicator
+    const mom = axis.momentum_score || 0;
+    if (mom > 0.0005) {
+      momEl.textContent = "↑";
+      momEl.className = "momentum-indicator momentum-positive";
+    } else if (mom < -0.0005) {
+      momEl.textContent = "↓";
+      momEl.className = "momentum-indicator momentum-negative";
+    } else {
+      momEl.textContent = "•";
+      momEl.className = "momentum-indicator momentum-neutral";
+    }
+  }
+
+  // Velocity summary
+  const vs = state.velocity;
+  if (vs) {
+    document.getElementById("vel-total-reversals").textContent = vs.total_reversals || 0;
+    document.getElementById("vel-total-updates").textContent = vs.total_updates || 0;
+  }
+}
+
+function buildSparkline(history, defaultPos, strokeColor) {
+  // Build an SVG sparkline from position history
+  const W = 200, H = 20;
+  const min = -1, max = 1; // tension axis range is [-1, 1]
+  const range = max - min;
+  const n = history.length;
+  if (n < 2) return "";
+
+  const color = strokeColor || "var(--accent-cyan)";
+  const points = history.map((v, i) => {
+    const x = (i / (n - 1)) * W;
+    const y = H - ((v - min) / range) * H;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+
+  const defaultY = H - ((defaultPos - min) / range) * H;
+  const polyline = `<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.2" opacity="0.7"/>`;
+  const defaultLine = `<line x1="0" y1="${defaultY.toFixed(1)}" x2="${W}" y2="${defaultY.toFixed(1)}" stroke="var(--text-dim)" stroke-width="0.5" stroke-dasharray="2,2" opacity="0.5"/>`;
+  const midLine = `<line x1="0" y1="${H/2}" x2="${W}" y2="${H/2}" stroke="var(--border)" stroke-width="0.3" opacity="0.3"/>`;
+
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${midLine}${defaultLine}${polyline}</svg>`;
 }
 
 function renderAttention(state) {

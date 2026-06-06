@@ -50,6 +50,7 @@ from isonome.agent import IsonomeAgent
 from isonome.cognition.pillar import CognitionPillar
 from isonome.praxis.pillar import PraxisPillar
 from isonome.mneme.pillar import MnemePillar
+from isonome.equilibrium.velocity import TensionVelocityTracker
 from isonome.types import Task
 
 
@@ -59,8 +60,9 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
     """Extract all dashboard-relevant state from a live agent."""
     engine = agent.engine
     axes = []
+    vt = engine._velocity_tracker
     for axis_id, axis in engine._axes.items():
-        axes.append({
+        axis_data = {
             "id": axis.id,
             "pillar": axis.pillar.value,
             "pole_left": axis.pole_left,
@@ -70,7 +72,31 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
             "damping": axis.damping,
             "learning_rate": axis.learning_rate,
             "drift": abs(axis.position - axis.default_position),
-        })
+        }
+        # Add velocity/momentum data if tracker is available
+        if vt is not None:
+            axis_data["velocity"] = vt.get_velocity(axis_id)
+            axis_data["momentum_score"] = vt.get_momentum_score(axis_id)
+            axis_data["reversal_count"] = vt.get_reversal_count(axis_id)
+            axis_data["reversal_rate"] = round(vt.get_reversal_rate(axis_id), 3)
+            # Position history for sparkline (most recent 30 points)
+            hist = vt._position_history.get(axis_id)
+            if hist is not None:
+                axis_data["position_history"] = list(hist)[-30:]
+            else:
+                axis_data["position_history"] = []
+        else:
+            # Fallback: get history from engine if no velocity tracker
+            hist = engine._history.get(axis_id)
+            if hist is not None and len(hist) > 0:
+                axis_data["position_history"] = list(hist)[-30:]
+            else:
+                axis_data["position_history"] = []
+            axis_data["velocity"] = 0.0
+            axis_data["momentum_score"] = 0.0
+            axis_data["reversal_count"] = 0
+            axis_data["reversal_rate"] = 0.0
+        axes.append(axis_data)
 
     # Compute stress level
     if axes:
@@ -177,6 +203,14 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
             "norm": [float(x) for x in profile.norm()],
         }
 
+    # Velocity summary
+    velocity_summary = None
+    if vt is not None:
+        velocity_summary = {
+            "total_reversals": vt.total_reversals,
+            "total_updates": vt.total_updates,
+        }
+
     return {
         "agent": {
             "name": agent.identity.name,
@@ -199,6 +233,7 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
         "mneme": mneme_stats,
         "calibration": calibration,
         "task_type_profiles": profiles,
+        "velocity": velocity_summary,
         "feedback_count": engine.total_feedback_received,
         "oscillation_events": engine.total_oscillation_events,
     }
@@ -221,6 +256,10 @@ class LiveAgent:
             praxis=PraxisPillar(),
             mneme=MnemePillar(),
         )
+        # Enable velocity tracking for momentum/velocity dashboard panel
+        self.agent.engine._velocity_tracker = TensionVelocityTracker()
+        for axis in self.agent.engine._axes.values():
+            self.agent.engine._velocity_tracker.register_axis(axis.id)
         self.agent.start()
         self.tick_count = 0
         self._lock = threading.Lock()
