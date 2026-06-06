@@ -25,9 +25,11 @@ Connected tension axes:
 
 from __future__ import annotations
 
+import heapq
 import math
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from heapq import heappop, heappush
 from uuid import UUID, uuid4
 
 
@@ -61,6 +63,128 @@ class BudgetEnforcementPolicy(Enum):
     AUTO_GC = "auto_gc"
     AUTO_COMPRESS = "auto_compress"
 
+
+
+class ChunkPriorityQueue:
+    """Priority queue for chunks rejected by budget enforcement.
+
+    When a chunk is rejected (doesn't fit in the budget), it's buffered
+    here for retry after the next GC cycle frees space. Chunks are
+    ordered by effective priority (task_relevance + importance tag boost),
+    so the most important rejected chunks get retried first.
+
+    Uses a min-heap internally (negated priority for max-heap behavior)
+    with a sequence counter for stable FIFO tiebreaking.
+
+    Attributes:
+        max_size: Maximum number of chunks the queue can hold.
+    """
+
+    def __init__(self, max_size: int = 64) -> None:
+        if max_size < 1:
+            raise ValueError(f"max_size must be positive, got {max_size}")
+        self.max_size = max_size
+        self._heap: list[tuple[float, int, AttentionChunk]] = []
+        self._seq: int = 0  # Tiebreaker for FIFO ordering
+        self._total_enqueued: int = 0
+        self._total_dequeued: int = 0
+        self._total_evicted: int = 0
+        self._total_dropped: int = 0
+
+    def _effective_priority(self, chunk: AttentionChunk) -> float:
+        """Compute effective priority for a chunk.
+
+        Priority = task_relevance + importance tag boost.
+        Higher = more important = dequeued first.
+        """
+        tag_boost = min(0.1, 0.05 * len(chunk.importance_tags))
+        return chunk.task_relevance + tag_boost
+
+    def enqueue(self, chunk: AttentionChunk) -> int:
+        """Add a chunk to the priority queue.
+
+        If the queue is at capacity, the lowest-priority entry is removed.
+        If the newcomer has lower priority than all entries, it is dropped
+        instead (no eviction needed).
+
+        Returns:
+            The position in the queue after insertion, or -1 if dropped.
+        """
+        self._total_enqueued += 1
+        priority = self._effective_priority(chunk)
+
+        if len(self._heap) >= self.max_size:
+            # In our negated min-heap, heap[0] is the most-negative value
+            # = HIGHEST actual priority (dequeued first).
+            # We need the LOWEST actual priority entry (closest to 0
+            # negated value = smallest actual priority) to decide eviction.
+            # Key: -neg_p gives the actual priority, so min(-neg_p)
+            # gives the smallest actual priority.
+            lowest_neg_p, lowest_seq, lowest_chunk = min(
+                self._heap, key=lambda x: -x[0]
+            )
+            lowest_priority = self._effective_priority(lowest_chunk)
+
+            if priority <= lowest_priority:
+                # Newcomer can't displace anyone - drop it
+                self._total_dropped += 1
+                return -1
+
+            # Evict the lowest-priority entry by removing it and re-heapifying
+            self._heap = [
+                item for item in self._heap
+                if not (item[0] == lowest_neg_p and item[1] == lowest_seq)
+            ]
+            heapq.heapify(self._heap)
+            self._total_evicted += 1
+
+        # Negate priority for max-heap behavior via min-heap
+        heappush(self._heap, (-priority, self._seq, chunk))
+        self._seq += 1
+        return len(self._heap) - 1
+
+    def dequeue(self) -> AttentionChunk | None:
+        """Remove and return the highest-priority chunk, or None if empty."""
+        if not self._heap:
+            return None
+        _, _, chunk = heappop(self._heap)
+        self._total_dequeued += 1
+        return chunk
+
+    def peek(self) -> AttentionChunk | None:
+        """Return the highest-priority chunk without removing it."""
+        if not self._heap:
+            return None
+        _, _, chunk = self._heap[0]
+        return chunk
+
+    def clear(self) -> None:
+        """Remove all chunks from the queue."""
+        self._heap.clear()
+        self._seq = 0
+
+    def __len__(self) -> int:
+        return len(self._heap)
+
+    def __bool__(self) -> bool:
+        return bool(self._heap)
+
+    def __iter__(self):
+        """Iterate over chunks in priority order (highest first)."""
+        for _, _, chunk in sorted(self._heap):
+            yield chunk
+
+    @property
+    def stats(self) -> dict:
+        """Queue statistics."""
+        return {
+            "current_size": len(self._heap),
+            "max_size": self.max_size,
+            "total_enqueued": self._total_enqueued,
+            "total_dequeued": self._total_dequeued,
+            "total_evicted": self._total_evicted,
+            "total_dropped": self._total_dropped,
+        }
 
 @dataclass(frozen=True, slots=True)
 class AttentionChunk:
@@ -188,6 +312,7 @@ class AttentionEquilibriumSystem:
         prune_threshold: float = 0.25,
         enforcement_policy: BudgetEnforcementPolicy = BudgetEnforcementPolicy.AUTO_GC,
         enforcement_threshold: float = 0.85,
+        rejected_queue_capacity: int = 64,
     ):
         """Initialize the attention equilibrium system.
 
@@ -200,6 +325,8 @@ class AttentionEquilibriumSystem:
             enforcement_policy: How to handle budget overflow when adding chunks.
             enforcement_threshold: Utilization fraction [0.1, 1.0] at which
                 enforce_budget() triggers auto-GC. Default 0.85 (85% full).
+            rejected_queue_capacity: Max chunks in the rejected-chunk buffer.
+                Set to 0 to disable rejected-chunk buffering. Default 64.
         """
         self._engine = engine
         self._budget = AttentionBudget(token_capacity=token_capacity)
@@ -211,6 +338,13 @@ class AttentionEquilibriumSystem:
         # Budget enforcement
         self._enforcement_policy = enforcement_policy
         self._enforcement_threshold = max(0.1, min(1.0, enforcement_threshold))
+
+        # Rejected-chunk priority queue (iter-026)
+        self._rejected_queue: ChunkPriorityQueue | None = None
+        if rejected_queue_capacity > 0:
+            self._rejected_queue = ChunkPriorityQueue(
+                max_size=rejected_queue_capacity
+            )
 
         # Enforcement statistics
         self._enforcement_auto_gc_triggered: int = 0
@@ -290,12 +424,14 @@ class AttentionEquilibriumSystem:
                 # Check if chunk would exceed capacity
                 if self._budget.tokens_used + token_count > self._budget.token_capacity:
                     self._enforcement_rejections += 1
+                    self._buffer_rejected(content, token_count, mutual_info, task_relevance, importance_tags)
                     return None
                 # Under threshold: no enforcement needed yet
                 # but above threshold: still reject if over capacity
                 if self._budget.utilization >= self._enforcement_threshold:
                     if self._budget.tokens_used + token_count > self._budget.token_capacity:
                         self._enforcement_rejections += 1
+                        self._buffer_rejected(content, token_count, mutual_info, task_relevance, importance_tags)
                         return None
 
             elif policy in (BudgetEnforcementPolicy.AUTO_GC, BudgetEnforcementPolicy.AUTO_COMPRESS):
@@ -315,10 +451,12 @@ class AttentionEquilibriumSystem:
                         else:
                             # Even compressed doesn't fit
                             self._enforcement_post_gc_rejections += 1
+                            self._buffer_rejected(content, token_count, mutual_info, task_relevance, importance_tags)
                             return None
                     else:
                         # AUTO_GC: reject if still no room after GC
                         self._enforcement_post_gc_rejections += 1
+                        self._buffer_rejected(content, token_count, mutual_info, task_relevance, importance_tags)
                         return None
 
         # Update frequencies FIRST so repeated content gets low surprisal
@@ -339,6 +477,88 @@ class AttentionEquilibriumSystem:
         self._budget.tokens_used += token_count
 
         return chunk
+
+    def _buffer_rejected(
+        self,
+        content: str,
+        token_count: int,
+        mutual_info: float,
+        task_relevance: float,
+        importance_tags: tuple[str, ...],
+    ) -> None:
+        """Buffer a rejected chunk in the priority queue for later retry.
+
+        Only buffers if the rejected queue is enabled (capacity > 0).
+        Oversized chunks (larger than total capacity) should NOT be
+        buffered — they would never fit. This method is called only
+        for budget-based rejections, not oversized ones.
+        """
+        if self._rejected_queue is None:
+            return
+        chunk = AttentionChunk(
+            content=content,
+            token_count=token_count,
+            surprisal=0.0,
+            mutual_info=mutual_info,
+            recency=1.0,
+            task_relevance=task_relevance,
+            importance_tags=importance_tags,
+        )
+        self._rejected_queue.enqueue(chunk)
+
+    def retry_rejected(self) -> AttentionChunk | None:
+        """Try to admit the highest-priority rejected chunk.
+
+        After GC frees space, call this to retry buffered chunks in
+        priority order. Returns the admitted chunk, or None if no
+        chunk could be admitted (queue empty or still no room).
+
+        Returns:
+            The admitted AttentionChunk, or None if no chunk could fit.
+        """
+        if self._rejected_queue is None or not self._rejected_queue:
+            return None
+
+        chunk = self._rejected_queue.peek()
+        if chunk is None:
+            return None
+
+        # Check if the highest-priority chunk fits
+        if self._budget.tokens_used + chunk.token_count > self._budget.token_capacity:
+            return None
+
+        # Dequeue and admit
+        chunk = self._rejected_queue.dequeue()
+        # Recompute surprisal now that we have more context
+        self._update_token_frequencies(chunk.content)
+        surprisal = self._compute_surprisal(chunk.content)
+
+        admitted = AttentionChunk(
+            content=chunk.content,
+            token_count=chunk.token_count,
+            surprisal=surprisal,
+            mutual_info=chunk.mutual_info,
+            recency=1.0,  # Freshly admitted = newest
+            task_relevance=chunk.task_relevance,
+            importance_tags=chunk.importance_tags,
+        )
+        self._chunks[admitted.id] = admitted
+        self._budget.tokens_used += admitted.token_count
+        return admitted
+
+    @property
+    def rejected_queue(self) -> ChunkPriorityQueue:
+        """The rejected-chunk priority queue.
+
+        Returns the queue even if buffering is disabled (returns
+        a zero-capacity queue in that case for API compatibility).
+        """
+        if self._rejected_queue is None:
+            # Return a shared sentinel zero-capacity queue
+            if not hasattr(self.__class__, '_sentinel_queue'):
+                self.__class__._sentinel_queue = ChunkPriorityQueue(max_size=1)
+            return self.__class__._sentinel_queue
+        return self._rejected_queue
 
     def set_calibration_state(
         self,
@@ -709,6 +929,7 @@ class AttentionEquilibriumSystem:
                 "oversized_rejections": self._enforcement_oversized_rejections,
                 "post_gc_rejections": self._enforcement_post_gc_rejections,
             },
+            "rejected_queue": self.rejected_queue.stats,
         }
 
     @property
