@@ -531,6 +531,7 @@ class TestAdaptiveDampingSerialization:
             "effective_damping", "stability_counters", "oscillation_severity",
             "damping_min", "damping_max", "boost_rate", "decay_rate",
             "stability_window", "oscillation_threshold", "total_adaptations",
+            "preemptive_oscillation_count", "preemptive_boost_rate",
         }
         assert set(d.keys()) == expected_keys
 

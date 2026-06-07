@@ -31,6 +31,11 @@ from isonome.types import (
     now as now,
 )
 from isonome.equilibrium.velocity import TensionVelocityTracker
+from isonome.equilibrium.event_log import (
+    TensionEventLog as TensionEventLog,
+    TensionEvent as TensionEvent,
+    TensionEventType as TensionEventType,
+)
 
 
 class PillarEquilibriumView:
@@ -94,6 +99,8 @@ class PillarEquilibriumView:
         "_velocities",
         "_momentum_scores",
         "_oscillation_imminent",
+        "_event_log",
+        "_own_axis_ids",
     )
 
     def __init__(
@@ -103,6 +110,7 @@ class PillarEquilibriumView:
         history: dict[TensionID, deque],
         oscillation_threshold: float,
         velocity_tracker: TensionVelocityTracker | None = None,
+        event_log: TensionEventLog | None = None,
     ):
         # Split axes into own and cross-pillar
         self._pillar = pillar
@@ -118,6 +126,10 @@ class PillarEquilibriumView:
         self._velocities: dict[TensionID, float] = {}
         self._momentum_scores: dict[TensionID, float] = {}
         self._oscillation_imminent: list[TensionID] = []
+
+        # Event log for audit trail (None if disabled)
+        self._event_log = event_log
+        self._own_axis_ids: tuple[TensionID, ...] = ()
 
         for axis_id, axis in axes.items():
             pos = axis.position
@@ -150,7 +162,10 @@ class PillarEquilibriumView:
                 if velocity_tracker.is_oscillation_imminent(axis_id):
                     self._oscillation_imminent.append(axis_id)
 
-            # Compute stress level (RMS drift from homeostasis)
+        # Populate own_axis_ids from the own_axes dict keys (for recent_events scoping)
+        self._own_axis_ids = tuple(self._own_axes.keys())
+
+        # Compute stress level (RMS drift from homeostasis)
         if self._drift:
             squared = sum(d ** 2 for d in self._drift.values())
             self._stress_level = math.sqrt(squared / len(self._drift))
@@ -303,6 +318,27 @@ class PillarEquilibriumView:
         """
         return self._momentum_scores.get(axis_id, 0.0) < 0
 
+    def recent_events(self, limit: int = 20) -> list[TensionEvent]:
+        """Return recent events affecting this pillar's own axes.
+
+        Args:
+            limit: Maximum number of events to return.
+
+        Returns:
+            List of recent TensionEvent objects scoped to this pillar's
+            own axes, in chronological order. Empty if event logging
+            is disabled.
+        """
+        if self._event_log is None:
+            return []
+        all_events = self._event_log.events()
+        # Filter to events affecting own axes (or engine-wide events)
+        scoped = [
+            e for e in all_events
+            if e.axis_id in self._own_axis_ids or e.axis_id == ""
+        ]
+        return scoped[-limit:]
+
     def summary(self) -> dict[str, Any]:
         """Return a summary dict for reporting/logging."""
         result = {
@@ -351,6 +387,10 @@ class AdaptiveDampingController:
     Adaptation rules:
     - **Oscillation detected**: increase damping (make axis more rigid)
       to stabilize the feedback loop. Scales with oscillation severity.
+    - **Oscillation imminent** (velocity-aware): when a TensionVelocityTracker
+      is wired in, the controller can boost damping preemptively — before
+      position stddev crosses the threshold — using velocity reversal rates
+      as an early warning signal. This is a softer, preventive boost.
     - **Stability sustained**: gradually decrease damping (make axis more
       fluid) to restore responsiveness. Only after sustained stability
       (no oscillation for `stability_window` ticks).
@@ -359,6 +399,7 @@ class AdaptiveDampingController:
 
     Mathematical model:
     - On oscillation: d_eff = min(d_max, d_eff + boost_rate * severity)
+    - On oscillation imminent (velocity): d_eff = min(d_max, d_eff + preemptive_boost_rate)
     - On stability: d_eff = max(d_min, d_eff - decay_rate)
     - Severity = oscillation_stddev / oscillation_threshold (capped at 2.0)
     - Base damping = axis.damping (the configured static value)
@@ -370,6 +411,8 @@ class AdaptiveDampingController:
       the axis's static damping value
     - The controller's state is serialized alongside the engine for
       cross-session persistence
+    - When both velocity tracking and adaptive damping are enabled, the
+      engine wires the tracker to the controller for preemptive detection
     """
 
     __slots__ = (
@@ -383,6 +426,10 @@ class AdaptiveDampingController:
         "_stability_window",
         "_oscillation_threshold",
         "_total_adaptations",
+        "_velocity_tracker",
+        "_preemptive_boost_rate",
+        "_preemptive_oscillation_count",
+        "_preemptive_threshold",
     )
 
     def __init__(
@@ -394,6 +441,9 @@ class AdaptiveDampingController:
         decay_rate: float = 0.02,
         stability_window: int = 6,
         oscillation_threshold: float = 0.6,
+        velocity_tracker: TensionVelocityTracker | None = None,
+        preemptive_boost_rate: float | None = None,
+        preemptive_threshold: float = 0.4,
     ):
         """Initialize the adaptive damping controller.
 
@@ -404,6 +454,16 @@ class AdaptiveDampingController:
             decay_rate: How much to decrease damping on sustained stability.
             stability_window: Ticks of stability before damping decays.
             oscillation_threshold: Stddev threshold matching the engine's.
+            velocity_tracker: Optional TensionVelocityTracker for preemptive
+                oscillation detection. When provided, the controller checks
+                is_oscillation_imminent() after each feedback tick and boosts
+                damping before position stddev confirms oscillation.
+            preemptive_boost_rate: How much to increase damping when
+                oscillation is imminent (velocity-based). Defaults to
+                boost_rate / 2 (a gentler, preventive boost).
+            preemptive_threshold: Reversal rate threshold for velocity-based
+                oscillation prediction. Passed to
+                TensionVelocityTracker.is_oscillation_imminent().
         """
         if not (0.0 <= damping_min <= 1.0):
             raise ValueError(f"damping_min must be in [0, 1], got {damping_min}")
@@ -430,6 +490,13 @@ class AdaptiveDampingController:
         self._stability_window = stability_window
         self._oscillation_threshold = oscillation_threshold
         self._total_adaptations: int = 0
+        self._velocity_tracker: TensionVelocityTracker | None = velocity_tracker
+        self._preemptive_boost_rate: float = (
+            preemptive_boost_rate if preemptive_boost_rate is not None
+            else boost_rate / 2.0
+        )
+        self._preemptive_oscillation_count: int = 0
+        self._preemptive_threshold = preemptive_threshold
 
     # -- Public API --
 
@@ -477,7 +544,14 @@ class AdaptiveDampingController:
 
         Called by the engine after each apply_feedback(). Analyzes the
         axis's recent position history for oscillation and adjusts the
-        effective damping accordingly.
+        effective damping accordingly. When a velocity tracker is bound,
+        also checks for imminent oscillation (velocity-based) and applies
+        a preemptive boost before position stddev confirms it.
+
+        Priority order:
+        1. Position-based oscillation (severity > 1.0): strongest boost
+        2. Velocity-based imminent oscillation: gentler preemptive boost
+        3. Stability: decay toward base damping
 
         Args:
             axis_id: The tension axis identifier.
@@ -499,12 +573,30 @@ class AdaptiveDampingController:
         severity = self._compute_severity(position_history)
         self._oscillation_severity[axis_id] = severity
 
+        # Check velocity-based oscillation prediction
+        is_preemptive = False
+        if (
+            severity <= 1.0
+            and self._velocity_tracker is not None
+            and axis_id in self._velocity_tracker._velocity
+        ):
+            is_preemptive = self._velocity_tracker.is_oscillation_imminent(
+                axis_id, threshold=self._preemptive_threshold
+            )
+
         if severity > 1.0:
-            # Oscillation detected -- boost damping
+            # Position-based oscillation detected -- boost damping
             boost = self._boost_rate * min(severity, 2.0)
             new_damping = min(self._damping_max, current + boost)
             self._effective_damping[axis_id] = new_damping
             self._stability_counters[axis_id] = 0
+            self._total_adaptations += 1
+        elif is_preemptive:
+            # Velocity-based oscillation imminent -- preemptive boost
+            new_damping = min(self._damping_max, current + self._preemptive_boost_rate)
+            self._effective_damping[axis_id] = new_damping
+            self._stability_counters[axis_id] = 0
+            self._preemptive_oscillation_count += 1
             self._total_adaptations += 1
         else:
             # Stable -- accumulate stability counter
@@ -533,11 +625,13 @@ class AdaptiveDampingController:
 
         Call this when the engine resets, to clear learned adaptations.
         Axes must be re-registered via register_axis() after reset.
+        The velocity_tracker binding is preserved across resets.
         """
         self._effective_damping.clear()
         self._stability_counters.clear()
         self._oscillation_severity.clear()
         self._total_adaptations = 0
+        self._preemptive_oscillation_count = 0
 
     # -- Properties --
 
@@ -566,6 +660,26 @@ class AdaptiveDampingController:
     def stability_window(self) -> int:
         return self._stability_window
 
+    @property
+    def velocity_tracker(self) -> TensionVelocityTracker | None:
+        """The velocity tracker bound to this controller, or None."""
+        return self._velocity_tracker
+
+    @velocity_tracker.setter
+    def velocity_tracker(self, tracker: TensionVelocityTracker | None) -> None:
+        """Bind or unbind a velocity tracker for preemptive detection."""
+        self._velocity_tracker = tracker
+
+    @property
+    def preemptive_boost_rate(self) -> float:
+        """The boost rate used when velocity-based oscillation is imminent."""
+        return self._preemptive_boost_rate
+
+    @property
+    def preemptive_oscillation_count(self) -> int:
+        """Total number of preemptive (velocity-based) oscillation boosts."""
+        return self._preemptive_oscillation_count
+
     def get_stability_counter(self, axis_id: TensionID) -> int:
         """How many consecutive stable ticks an axis has had."""
         return self._stability_counters.get(axis_id, 0)
@@ -593,6 +707,8 @@ class AdaptiveDampingController:
             "stability_window": self._stability_window,
             "oscillation_threshold": self._oscillation_threshold,
             "total_adaptations": self._total_adaptations,
+            "preemptive_oscillation_count": self._preemptive_oscillation_count,
+            "preemptive_boost_rate": self._preemptive_boost_rate,
         }
 
     @classmethod
@@ -605,6 +721,7 @@ class AdaptiveDampingController:
             decay_rate=data.get("decay_rate", 0.02),
             stability_window=data.get("stability_window", 6),
             oscillation_threshold=data.get("oscillation_threshold", 0.6),
+            preemptive_boost_rate=data.get("preemptive_boost_rate"),
         )
         controller._effective_damping = data.get("effective_damping", {})
         controller._stability_counters = {
@@ -612,6 +729,9 @@ class AdaptiveDampingController:
         }
         controller._oscillation_severity = data.get("oscillation_severity", {})
         controller._total_adaptations = int(data.get("total_adaptations", 0))
+        controller._preemptive_oscillation_count = int(
+            data.get("preemptive_oscillation_count", 0)
+        )
         return controller
 
     # -- Internal --
@@ -639,6 +759,7 @@ class AdaptiveDampingController:
             f"AdaptiveDampingController("
             f"axes={n_axes}, "
             f"adaptations={self._total_adaptations}, "
+            f"preemptive={self._preemptive_oscillation_count}, "
             f"range=[{self._damping_min:.2f}, {self._damping_max:.2f}])"
         )
 
@@ -748,6 +869,9 @@ class EquilibriumEngine:
         enable_adaptive_damping: bool = False,
         velocity_tracker: TensionVelocityTracker | None = None,
         enable_velocity_tracking: bool = False,
+        event_log: TensionEventLog | None = None,
+        enable_event_log: bool = False,
+        event_log_max_events: int = 1000,
     ):
         """Initialize the equilibrium engine.
 
@@ -783,6 +907,7 @@ class EquilibriumEngine:
         self._oscillation_window = oscillation_window
         self._feedback_count: int = 0
         self._oscillation_events: int = 0
+        self._tick: int = 0
 
         # -- Adaptive damping integration --
         if adaptive_damping is not None:
@@ -812,6 +937,23 @@ class EquilibriumEngine:
             for axis in self._axes.values():
                 self._velocity_tracker.register_axis(axis.id)
 
+        # Wire velocity tracker to adaptive damping controller
+        # when both are enabled
+        if (
+            self._adaptive_damping is not None
+            and self._velocity_tracker is not None
+            and self._adaptive_damping.velocity_tracker is None
+        ):
+            self._adaptive_damping.velocity_tracker = self._velocity_tracker
+
+        # -- Event log integration --
+        if event_log is not None:
+            self._event_log = event_log
+        elif enable_event_log:
+            self._event_log = TensionEventLog(max_events=event_log_max_events)
+        else:
+            self._event_log = None
+
         # ── Public API ───────────────────────────────────────────────
 
     @property
@@ -826,6 +968,11 @@ class EquilibriumEngine:
     @property
     def total_oscillation_events(self) -> int:
         return self._oscillation_events
+
+    @property
+    def event_log(self) -> TensionEventLog | None:
+        """The tension event log, or None if not enabled."""
+        return self._event_log
 
 
     def snapshot(self, agent_id=None, trigger=None) -> TensionSnapshot:
@@ -898,6 +1045,20 @@ class EquilibriumEngine:
                 self._axes[feedback.tension_axis_id].damping,
             )
 
+        # Record event in the tension event log
+        if self._event_log is not None:
+            self._tick += 1
+            self._event_log.record(
+                event_type=TensionEventType.FEEDBACK_APPLIED,
+                axis_id=feedback.tension_axis_id,
+                source_pillar=feedback.source,
+                position_before=axis.position,
+                position_after=new_axis.position,
+                delta=effective_delta,
+                confidence=feedback.confidence,
+                tick=self._tick,
+            )
+
         return new_axis
 
     def apply_feedback_batch(self, feedbacks: Sequence[Feedback]) -> TensionSnapshot:
@@ -950,6 +1111,30 @@ class EquilibriumEngine:
                     self._axes[axis_id].damping,
                 )
 
+        # Phase 5: record events in the tension event log
+        if self._event_log is not None:
+            for fb in feedbacks:
+                new_axis = updates.get(fb.tension_axis_id)
+                if new_axis is None:
+                    continue
+                old_axis = self._axes.get(fb.tension_axis_id)
+                # We need position_before from before the update.
+                # Since updates are already applied, we use the delta to reconstruct.
+                pos_after = new_axis.position
+                effective_delta = fb.signal * fb.confidence
+                pos_before = pos_after - effective_delta * (1 - new_axis.damping)
+                self._tick += 1
+                self._event_log.record(
+                    event_type=TensionEventType.FEEDBACK_APPLIED,
+                    axis_id=fb.tension_axis_id,
+                    source_pillar=fb.source,
+                    position_before=pos_before,
+                    position_after=pos_after,
+                    delta=effective_delta,
+                    confidence=fb.confidence,
+                    tick=self._tick,
+                )
+
         return self.snapshot()
 
     def adjust_default(self, axis_id: TensionID, outcome_signal: float) -> TensionAxis:
@@ -963,12 +1148,28 @@ class EquilibriumEngine:
         if axis is None:
             raise KeyError(f"Unknown tension axis '{axis_id}'")
 
+        old_default = axis.default_position
         shift = outcome_signal * axis.learning_rate
         new_default = axis.default_position + shift
         new_default = max(-1.0, min(1.0, new_default))
 
         new_axis = axis.model_copy(update={"default_position": new_default})
         self._axes[axis_id] = new_axis
+
+        # Record event in the tension event log
+        if self._event_log is not None:
+            self._tick += 1
+            self._event_log.record(
+                event_type=TensionEventType.DEFAULT_ADJUSTED,
+                axis_id=axis_id,
+                source_pillar=axis.pillar,
+                position_before=old_default,
+                position_after=new_default,
+                delta=shift,
+                confidence=1.0,
+                tick=self._tick,
+            )
+
         return new_axis
 
     def get_behavior_profile(self) -> dict[TensionID, float]:
@@ -991,12 +1192,29 @@ class EquilibriumEngine:
             self._adaptive_damping.reset()
             for axis in self._axes.values():
                 self._adaptive_damping.register_axis(axis.id, axis.damping)
+            # Re-wire velocity tracker if both are present
+            if self._velocity_tracker is not None:
+                self._adaptive_damping.velocity_tracker = self._velocity_tracker
 
         # Reset velocity tracker if present
         if self._velocity_tracker is not None:
             self._velocity_tracker.reset()
             for axis in self._axes.values():
                 self._velocity_tracker.register_axis(axis.id)
+
+        # Record reset event in the tension event log
+        if self._event_log is not None:
+            self._tick += 1
+            self._event_log.record(
+                event_type=TensionEventType.RESET,
+                axis_id="",
+                source_pillar=Pillar.COGNITION,  # Engine-wide event
+                position_before=0.0,
+                position_after=0.0,
+                delta=0.0,
+                confidence=0.0,
+                tick=self._tick,
+            )
 
     def tension_distance(self) -> float:
         """Aggregate drift from homeostasis — how 'stressed' the agent is.
@@ -1047,6 +1265,7 @@ class EquilibriumEngine:
             history=self._history,
             oscillation_threshold=self._oscillation_threshold,
             velocity_tracker=self._velocity_tracker,
+            event_log=self._event_log,
         )
 
     # ── Internal ─────────────────────────────────────────────────
@@ -1071,6 +1290,21 @@ class EquilibriumEngine:
 
         if stddev > self._oscillation_threshold:
             self._oscillation_events += 1
+
+            # Record oscillation detection event in the tension event log
+            if self._event_log is not None:
+                axis = self._axes.get(axis_id)
+                self._tick += 1
+                self._event_log.record(
+                    event_type=TensionEventType.OSCILLATION_DETECTED,
+                    axis_id=axis_id,
+                    source_pillar=axis.pillar if axis else Pillar.COGNITION,
+                    position_before=mean,
+                    position_after=history[-1] if history else 0.0,
+                    delta=stddev,
+                    confidence=0.0,
+                    tick=self._tick,
+                )
             # Don't raise — just increment the counter. The caller
             # can decide whether to escalate.
 
@@ -1113,6 +1347,9 @@ class EquilibriumEngine:
             ),
             "velocity_tracker_state": (
                 self._velocity_tracker.to_dict() if self._velocity_tracker is not None else None
+            ),
+            "event_log_state": (
+                self._event_log.to_dict() if self._event_log is not None else None
             ),
             }
 
@@ -1178,6 +1415,11 @@ class EquilibriumEngine:
                 if axis.id not in tracker._velocity:
                     tracker.register_axis(axis.id)
 
+        # Wire velocity tracker to adaptive damping controller
+        # when both are restored
+        if engine._adaptive_damping is not None and engine._velocity_tracker is not None:
+            engine._adaptive_damping.velocity_tracker = engine._velocity_tracker
+
         # Restore oscillation history
         saved_history = data.get("history", {})
         for axis_id, hist_list in saved_history.items():
@@ -1199,5 +1441,11 @@ class EquilibriumEngine:
 
         engine._feedback_count = int(data.get("feedback_count", 0))
         engine._oscillation_events = int(data.get("oscillation_events", 0))
+
+        # Restore event log if present
+        el_state = data.get("event_log_state")
+        if el_state is not None:
+            from isonome.equilibrium.event_log import TensionEventLog
+            engine._event_log = TensionEventLog.from_dict(el_state)
 
         return engine
