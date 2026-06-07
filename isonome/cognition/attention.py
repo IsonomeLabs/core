@@ -362,6 +362,243 @@ class ChunkSplitter:
             "total_fragments_dropped": self._total_fragments_dropped,
         }
 
+
+class AdaptiveThresholdController:
+    """Adapts the budget enforcement threshold based on GC effectiveness.
+
+    When GC consistently frees a large fraction of capacity, the enforcement
+    threshold can be raised (delaying enforcement) because GC is effective
+    enough to reclaim space on demand. Conversely, when GC is ineffective,
+    the threshold should be lowered (triggering enforcement earlier) to
+    prevent the system from hitting the hard capacity wall.
+
+    Mathematical foundation:
+    The controller tracks a rolling average of GC effectiveness:
+      effectiveness_i = tokens_freed_i / (capacity * base_threshold)
+
+    The adapted threshold is:
+      θ_adapted = θ_base + λ * (effectiveness - target)
+
+    Where:
+    - θ_base: the user-configured base enforcement threshold
+    - λ: adaptation rate (how aggressively to adjust)
+    - target: the target GC effectiveness (default 0.30 = 30% of capacity)
+    - effectiveness: rolling average GC effectiveness
+
+    Threshold bounds:
+    - θ_min (default 0.60): never drop below this — too aggressive
+    - θ_max (default 0.98): never exceed this — too close to the wall
+
+    The controller is opt-in (enabled by setting adapt=True) and is
+    fully backward-compatible: when disabled, the base threshold is
+    returned unchanged.
+
+    Decay: The rolling average decays toward zero when no GC occurs,
+    preventing stale effectiveness estimates from persisting.
+    """
+
+    __slots__ = (
+        "_base_threshold",
+        "_adapt_rate",
+        "_target_effectiveness",
+        "_min_threshold",
+        "_max_threshold",
+        "_enabled",
+        "_window_size",
+        "_effectiveness_history",
+        "_adapted_threshold",
+        "_total_gc_observations",
+        "_total_adaptations",
+        "_decay_rate",
+    )
+
+    def __init__(
+        self,
+        base_threshold: float = 0.85,
+        *,
+        adapt_rate: float = 0.20,
+        target_effectiveness: float = 0.30,
+        min_threshold: float = 0.60,
+        max_threshold: float = 0.98,
+        enabled: bool = True,
+        window_size: int = 10,
+        decay_rate: float = 0.05,
+    ) -> None:
+        """Initialize the adaptive threshold controller.
+
+        Args:
+            base_threshold: The initial enforcement threshold to adapt from.
+            adapt_rate: How aggressively to adjust per observation (λ).
+                Smaller = more conservative. Default 0.20.
+            target_effectiveness: Target GC effectiveness fraction.
+                If GC frees this fraction of capacity, threshold stays
+                at base. Default 0.30 (30%).
+            min_threshold: Floor for the adapted threshold. Default 0.60.
+            max_threshold: Ceiling for the adapted threshold. Default 0.98.
+            enabled: Whether adaptation is active. Default True.
+            window_size: Number of recent GC reports to average. Default 10.
+            decay_rate: Per-tick decay for the rolling average when no
+                GC occurs. Default 0.05.
+        """
+        self._base_threshold = max(0.1, min(1.0, base_threshold))
+        self._adapt_rate = max(0.0, min(1.0, adapt_rate))
+        self._target_effectiveness = max(0.0, min(1.0, target_effectiveness))
+        self._min_threshold = max(0.1, min(1.0, min_threshold))
+        self._max_threshold = max(self._min_threshold, min(1.0, max_threshold))
+        self._enabled = enabled
+        self._window_size = max(1, window_size)
+        self._decay_rate = max(0.0, min(1.0, decay_rate))
+
+        self._effectiveness_history: list[float] = []
+        self._adapted_threshold: float = self._base_threshold
+        self._total_gc_observations: int = 0
+        self._total_adaptations: int = 0
+
+        # Ensure base is within [min, max]
+        self._base_threshold = max(
+            self._min_threshold, min(self._max_threshold, self._base_threshold)
+        )
+
+    def observe_gc(
+        self, report: "GarbageCollectionReport", token_capacity: int
+    ) -> None:
+        """Observe a GC cycle and update the adapted threshold.
+
+        Computes effectiveness as tokens_freed / (capacity * base_threshold),
+        adds it to the rolling window, and adapts the threshold.
+
+        Args:
+            report: The GC report from the completed cycle.
+            token_capacity: Total token capacity of the system.
+        """
+        if not self._enabled or token_capacity <= 0:
+            return
+
+        self._total_gc_observations += 1
+
+        # Effectiveness = fraction of "expected GC capacity" that was freed
+        # Expected capacity = token_capacity * base_threshold (the zone GC targets)
+        effectiveness = report.tokens_freed / (token_capacity * self._base_threshold)
+        effectiveness = min(1.0, effectiveness)  # Clamp at 1.0
+
+        # Add to rolling window
+        self._effectiveness_history.append(effectiveness)
+        if len(self._effectiveness_history) > self._window_size:
+            self._effectiveness_history = self._effectiveness_history[
+                -self._window_size :
+            ]
+
+        self._adapt()
+
+    def tick(self) -> None:
+        """Called each tick to apply decay when no GC occurs.
+
+        Decays the rolling average toward zero so stale effectiveness
+        estimates don't persist indefinitely. This prevents the system
+        from keeping a high threshold based on old GC performance.
+        """
+        if not self._enabled or not self._effectiveness_history:
+            return
+
+        # Exponential decay: multiply all history entries by (1 - decay_rate)
+        decayed = [e * (1.0 - self._decay_rate) for e in self._effectiveness_history]
+        self._effectiveness_history = decayed
+
+        # Re-adapt after decay
+        self._adapt()
+
+    def _adapt(self) -> None:
+        """Compute the adapted threshold from the current effectiveness history."""
+        if not self._effectiveness_history:
+            return
+
+        self._total_adaptations += 1
+
+        avg_effectiveness = sum(self._effectiveness_history) / len(
+            self._effectiveness_history
+        )
+
+        # Adapt: if effectiveness > target, raise threshold (delay enforcement)
+        #         if effectiveness < target, lower threshold (earlier enforcement)
+        delta = self._adapt_rate * (avg_effectiveness - self._target_effectiveness)
+        self._adapted_threshold = self._base_threshold + delta
+
+        # Clamp to bounds
+        self._adapted_threshold = max(
+            self._min_threshold, min(self._max_threshold, self._adapted_threshold)
+        )
+
+    @property
+    def threshold(self) -> float:
+        """The current adapted enforcement threshold."""
+        return self._adapted_threshold
+
+    @property
+    def base_threshold(self) -> float:
+        """The un-adapted base threshold."""
+        return self._base_threshold
+
+    @base_threshold.setter
+    def base_threshold(self, value: float) -> None:
+        """Update the base threshold (e.g., from external configuration)."""
+        self._base_threshold = max(self._min_threshold, min(self._max_threshold, value))
+        # Recompute adapted threshold from the new base
+        if self._effectiveness_history:
+            self._adapt()
+        else:
+            self._adapted_threshold = self._base_threshold
+
+    @property
+    def enabled(self) -> bool:
+        """Whether adaptation is active."""
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        """Enable or disable adaptation.
+
+        When disabled, threshold() returns the base threshold.
+        When re-enabled, resumes from the current adapted value.
+        """
+        self._enabled = value
+        if not value:
+            self._adapted_threshold = self._base_threshold
+
+    @property
+    def effectiveness_average(self) -> float:
+        """Current rolling average GC effectiveness, or 0.0 if no data."""
+        if not self._effectiveness_history:
+            return 0.0
+        return sum(self._effectiveness_history) / len(self._effectiveness_history)
+
+    @property
+    def stats(self) -> dict:
+        """Controller statistics."""
+        return {
+            "enabled": self._enabled,
+            "base_threshold": self._base_threshold,
+            "adapted_threshold": round(self._adapted_threshold, 4),
+            "adaptation_delta": round(self._adapted_threshold - self._base_threshold, 4),
+            "effectiveness_average": round(self.effectiveness_average, 4),
+            "effectiveness_samples": len(self._effectiveness_history),
+            "window_size": self._window_size,
+            "adapt_rate": self._adapt_rate,
+            "target_effectiveness": self._target_effectiveness,
+            "min_threshold": self._min_threshold,
+            "max_threshold": self._max_threshold,
+            "total_gc_observations": self._total_gc_observations,
+            "total_adaptations": self._total_adaptations,
+            "decay_rate": self._decay_rate,
+        }
+
+    def reset(self) -> None:
+        """Reset all state to initial values."""
+        self._effectiveness_history.clear()
+        self._adapted_threshold = self._base_threshold
+        self._total_gc_observations = 0
+        self._total_adaptations = 0
+
+
 @dataclass(frozen=True, slots=True)
 class AttentionChunk:
     """A single chunk of context being managed by the attention system.
@@ -491,7 +728,8 @@ class AttentionEquilibriumSystem:
         rejected_queue_capacity: int = 64,
         split_threshold: float = 0.0,
         min_fragment_tokens: int = 1,
-    ):
+        adaptive_threshold: bool = False,
+        ):
         """Initialize the attention equilibrium system.
 
         Args:
@@ -505,13 +743,17 @@ class AttentionEquilibriumSystem:
                 enforce_budget() triggers auto-GC. Default 0.85 (85% full).
             rejected_queue_capacity: Max chunks in the rejected-chunk buffer.
                 Set to 0 to disable rejected-chunk buffering. Default 64.
-        Set to 0 to disable rejected-chunk buffering. Default 64.
-        split_threshold: Utilization fraction [0.0, 1.0] at which chunk
-        splitting becomes active. When utilization >= split_threshold and
-        a chunk doesn't fit, it is split into fragments that fit.
-        Default 0.0 (splitting disabled).
-        min_fragment_tokens: Minimum token count for a split fragment to
-        be kept. Fragments below this are dropped. Default 1.
+            split_threshold: Utilization fraction [0.0, 1.0] at which chunk
+                splitting becomes active. When utilization >= split_threshold and
+                a chunk doesn't fit, it is split into fragments that fit.
+                Default 0.0 (splitting disabled).
+            min_fragment_tokens: Minimum token count for a split fragment to
+                be kept. Fragments below this are dropped. Default 1.
+            adaptive_threshold: Enable adaptive enforcement threshold that
+                adjusts based on GC effectiveness. When True, the enforcement
+                threshold is managed by an AdaptiveThresholdController which
+                raises the threshold when GC is effective and lowers it when
+                GC is ineffective. Default False (backward compatible).
         """
         self._engine = engine
         self._budget = AttentionBudget(token_capacity=token_capacity)
@@ -539,6 +781,14 @@ class AttentionEquilibriumSystem:
                 min_fragment_tokens=min_fragment_tokens
             )
 
+        # Adaptive enforcement threshold (iter-028)
+        self._adaptive_threshold_controller: AdaptiveThresholdController | None = None
+        if adaptive_threshold:
+            self._adaptive_threshold_controller = AdaptiveThresholdController(
+                base_threshold=self._enforcement_threshold,
+                enabled=True,
+            )
+
         # Enforcement statistics
         self._enforcement_auto_gc_triggered: int = 0
         self._enforcement_rejections: int = 0
@@ -564,9 +814,19 @@ class AttentionEquilibriumSystem:
         self._calibration_overconfident: bool = False
         self._calibration_underconfident: bool = False
         self._calibration_predictions: int = 0
-        self._calibration_active: bool = False  # True once calibration data flows
+        self._calibration_active: bool = False # True once calibration data flows
 
     # ── Public API ───────────────────────────────────────────────
+
+    def _effective_enforcement_threshold(self) -> float:
+        """Return the current enforcement threshold, adapting if controller is active.
+
+        When adaptive threshold is enabled, returns the controller's adapted
+        threshold. Otherwise returns the static enforcement threshold.
+        """
+        if self._adaptive_threshold_controller is not None:
+            return self._adaptive_threshold_controller.threshold
+        return self._enforcement_threshold
 
     def add_chunk(
         self,
@@ -605,9 +865,10 @@ class AttentionEquilibriumSystem:
             return None
 
         # 2. Check if there's room (or if enforcement threshold is exceeded)
+        eff_threshold = self._effective_enforcement_threshold()
         needs_enforcement = (
             self._budget.tokens_used + token_count > self._budget.token_capacity
-            or self._budget.utilization >= self._enforcement_threshold
+            or self._budget.utilization >= eff_threshold
         )
 
         if needs_enforcement and token_count > 0:
@@ -626,7 +887,7 @@ class AttentionEquilibriumSystem:
                     self._buffer_rejected(content, token_count, mutual_info, task_relevance, importance_tags)
                     return None
                 # Under budget but at/above threshold: still reject if over capacity
-                elif self._budget.utilization >= self._enforcement_threshold:
+                elif self._budget.utilization >= eff_threshold:
                     if self._budget.tokens_used + token_count > self._budget.token_capacity:
                         # Try splitting before rejecting
                         split_result = self._attempt_split(
@@ -640,7 +901,7 @@ class AttentionEquilibriumSystem:
 
             elif policy in (BudgetEnforcementPolicy.AUTO_GC, BudgetEnforcementPolicy.AUTO_COMPRESS):
                 # Try to free space via auto-GC
-                if self._budget.utilization >= self._enforcement_threshold:
+                if self._budget.utilization >= eff_threshold:
                     self._enforcement_auto_gc_triggered += 1
                     self.collect_garbage()
 
@@ -821,7 +1082,8 @@ class AttentionEquilibriumSystem:
             recency=1.0,  # Freshly admitted = newest
             task_relevance=chunk.task_relevance,
             importance_tags=chunk.importance_tags,
-        )
+            )
+
         self._chunks[admitted.id] = admitted
         self._budget.tokens_used += admitted.token_count
         return admitted
@@ -1118,29 +1380,37 @@ class AttentionEquilibriumSystem:
         # Update budget
         self._budget.tokens_used -= tokens_freed
 
-        return GarbageCollectionReport(
-        	gc_cycle=self._gc_cycles,
-        	chunks_before=len(scored),
-        	chunks_after=len(kept) + len(compressed),
-        	kept_count=len(kept),
-        	compressed_count=len(compressed),
-        	pruned_count=len(pruned),
-        	tokens_freed=tokens_freed,
-        	budget_utilization_before=max(0.0, self._budget.utilization),
-        	budget_utilization_after=max(0.0, self._budget.utilization),
-        	keep_threshold=keep_thresh,
-        	prune_threshold=prune_thresh,
-        	tension_profile=profile,
-        	alpha=alpha,
-        	beta=beta,
-        	gamma=gamma,
-        	delta=delta,
-        	calibration_active=self._calibration_active,
-        	calibration_ece=round(self._calibration_ece, 4),
-        	calibration_modifier=round(cal_mod, 4),
-        	calibration_weight_rebalance_alpha=round(cal_alpha_delta, 4),
-        	calibration_weight_rebalance_beta=round(cal_beta_delta, 4),
+        report = GarbageCollectionReport(
+            gc_cycle=self._gc_cycles,
+            chunks_before=len(scored),
+            chunks_after=len(kept) + len(compressed),
+            kept_count=len(kept),
+            compressed_count=len(compressed),
+            pruned_count=len(pruned),
+            tokens_freed=tokens_freed,
+            budget_utilization_before=max(0.0, self._budget.utilization),
+            budget_utilization_after=max(0.0, self._budget.utilization),
+            keep_threshold=keep_thresh,
+            prune_threshold=prune_thresh,
+            tension_profile=profile,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+            delta=delta,
+            calibration_active=self._calibration_active,
+            calibration_ece=round(self._calibration_ece, 4),
+            calibration_modifier=round(cal_mod, 4),
+            calibration_weight_rebalance_alpha=round(cal_alpha_delta, 4),
+            calibration_weight_rebalance_beta=round(cal_beta_delta, 4),
         )
+
+        # Feed GC report to adaptive threshold controller (iter-028)
+        if self._adaptive_threshold_controller is not None:
+            self._adaptive_threshold_controller.observe_gc(
+                report, self._budget.token_capacity
+            )
+
+        return report
 
     def apply_recency_decay(self, decay_rate: float = 0.05) -> None:
         """Apply exponential decay to all chunks' recency scores.
@@ -1208,7 +1478,7 @@ class AttentionEquilibriumSystem:
             "entropy_estimate": round(self._estimate_entropy(), 4),
             "enforcement": {
                 "policy": self._enforcement_policy.value,
-                "threshold": self._enforcement_threshold,
+                "threshold": self._effective_enforcement_threshold(),
                 "auto_gc_triggered": self._enforcement_auto_gc_triggered,
                 "rejections": self._enforcement_rejections,
                 "auto_compressions": self._enforcement_auto_compressions,
@@ -1221,6 +1491,11 @@ class AttentionEquilibriumSystem:
                 "total_fragments_produced": 0,
                 "total_fragments_dropped": 0,
             },
+            "adaptive_threshold": (
+                self._adaptive_threshold_controller.stats
+                if self._adaptive_threshold_controller is not None
+                else {"enabled": False}
+            ),
         }
 
     @property
@@ -1240,7 +1515,7 @@ class AttentionEquilibriumSystem:
         Returns:
             A GarbageCollectionReport if GC was triggered, else None.
         """
-        if self._budget.utilization < self._enforcement_threshold:
+        if self._budget.utilization < self._effective_enforcement_threshold():
             return None
 
         if self._enforcement_policy == BudgetEnforcementPolicy.REJECT:
@@ -1257,21 +1532,28 @@ class AttentionEquilibriumSystem:
 
     @property
     def enforcement_threshold(self) -> float:
-        """Utilization threshold at which auto-GC triggers."""
-        return self._enforcement_threshold
+        """Utilization threshold at which auto-GC triggers.
+
+        When adaptive threshold is enabled, returns the controller's
+        current adapted threshold. Otherwise returns the static threshold.
+        """
+        return self._effective_enforcement_threshold()
 
     @property
     def enforcement_stats(self) -> dict:
         """Enforcement-specific statistics."""
-        return {
+        result = {
             "policy": self._enforcement_policy.value,
-            "threshold": self._enforcement_threshold,
+            "threshold": self._effective_enforcement_threshold(),
             "auto_gc_triggered": self._enforcement_auto_gc_triggered,
             "rejections": self._enforcement_rejections,
             "auto_compressions": self._enforcement_auto_compressions,
             "oversized_rejections": self._enforcement_oversized_rejections,
             "post_gc_rejections": self._enforcement_post_gc_rejections,
         }
+        if self._adaptive_threshold_controller is not None:
+            result["adaptive_threshold"] = self._adaptive_threshold_controller.stats
+        return result
 
     # ── Tension modulation ──────────────────────────────────────
 
@@ -1312,9 +1594,9 @@ class AttentionEquilibriumSystem:
 
         # Divergent/Convergent modulation (±10% swing)
         if diverge < 0: # Divergent: favor surprisal (diversity)
-        	alpha += 0.06
+            alpha += 0.06
         else: # Convergent: favor task relevance
-        	beta += 0.06
+            beta += 0.06
 
         # Calibration-driven weight rebalance (iter-016)
         # When miscalibrated, shift weight between α (surprisal) and β (MI).
@@ -1447,22 +1729,22 @@ class GarbageCollectionReport:
     calibration_weight_rebalance_beta: float = 0.0
 
     def summary(self) -> str:
-    	base = (
-    		f"GC#{self.gc_cycle}: {self.chunks_before}→{self.chunks_after} chunks "
-    		f"(kept={self.kept_count}, comp={self.compressed_count}, "
-    		f"pruned={self.pruned_count}) | "
-    		f"freed {self.tokens_freed} tokens | "
-    		f"util {self.budget_utilization_before:.1%}→{self.budget_utilization_after:.1%} | "
-    		f"thresholds k={self.keep_threshold:.2f} p={self.prune_threshold:.2f}"
-    	)
-    	if self.calibration_active and abs(self.calibration_modifier) > 0.001:
-    		base += f" | calΔ={self.calibration_modifier:+.3f} (ECE={self.calibration_ece:.3f})"
-    	if self.calibration_active and (
-    		abs(self.calibration_weight_rebalance_alpha) > 0.001
-    		or abs(self.calibration_weight_rebalance_beta) > 0.001
-    	):
-    		base += (
-    			f" | calWΔ α={self.calibration_weight_rebalance_alpha:+.4f}"
-    			f" β={self.calibration_weight_rebalance_beta:+.4f}"
-    		)
-    	return base
+        base = (
+            f"GC#{self.gc_cycle}: {self.chunks_before}→{self.chunks_after} chunks "
+            f"(kept={self.kept_count}, comp={self.compressed_count}, "
+            f"pruned={self.pruned_count}) | "
+            f"freed {self.tokens_freed} tokens | "
+            f"util {self.budget_utilization_before:.1%}→{self.budget_utilization_after:.1%} | "
+            f"thresholds k={self.keep_threshold:.2f} p={self.prune_threshold:.2f}"
+        )
+        if self.calibration_active and abs(self.calibration_modifier) > 0.001:
+            base += f" | calΔ={self.calibration_modifier:+.3f} (ECE={self.calibration_ece:.3f})"
+        if self.calibration_active and (
+            abs(self.calibration_weight_rebalance_alpha) > 0.001
+            or abs(self.calibration_weight_rebalance_beta) > 0.001
+        ):
+            base += (
+                f" | calWΔ α={self.calibration_weight_rebalance_alpha:+.4f}"
+                f" β={self.calibration_weight_rebalance_beta:+.4f}"
+            )
+        return base
