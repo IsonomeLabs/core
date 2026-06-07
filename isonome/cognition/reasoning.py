@@ -63,6 +63,11 @@ class EvidencePoint:
 
     Evidence can come from the attention system (context chunks),
     prior reasoning steps, or external signals.
+
+    Evidential decay: evidence weight naturally decreases over time,
+    modeling the "freshness" of information. Use ``evidential_decay()``
+    to compute the effective (time-decayed) weight, or call
+    ``ReasoningNode.decay_weights()`` to apply decay in-place.
     """
 
     content: str = field(repr=False)
@@ -70,6 +75,57 @@ class EvidencePoint:
     weight: float = 1.0  # Relevance weight [0, 1]
     source: str = "attention"  # Where this evidence came from
     id: UUID = field(default_factory=uuid4)
+    created_at: float = field(default_factory=time.time)
+
+
+def evidential_decay(
+    weight: float,
+    created_at: float,
+    *,
+    now: float | None = None,
+    half_life: float = 3600.0,
+    min_weight: float = 0.0,
+) -> float:
+    """Compute the time-decayed weight of an evidence point.
+
+    Uses exponential decay: ``effective_weight = weight × 2^(-age / half_life)``
+
+    This models the principle that evidence becomes less relevant as it
+    ages — a feedback signal from 2 hours ago should influence current
+    decisions less than one from 30 seconds ago.
+
+    Args:
+        weight: The original evidence weight [0, 1].
+        created_at: Unix timestamp when the evidence was created.
+        now: Current time (defaults to ``time.time()``). Pass explicitly
+            for deterministic testing.
+        half_life: Seconds for weight to halve. Default 3600 (1 hour).
+            Set to ``float('inf')`` to disable decay entirely.
+        min_weight: Floor for the decayed weight. Ensures very old
+            evidence retains a minimum influence rather than vanishing.
+
+    Returns:
+        Decayed weight clamped to ``[min_weight, weight]``.
+    """
+    if half_life <= 0:
+        raise ValueError(f"half_life must be positive, got {half_life}")
+    if min_weight < 0:
+        raise ValueError(f"min_weight must be >= 0, got {min_weight}")
+    if min_weight > weight:
+        raise ValueError(
+            f"min_weight ({min_weight}) cannot exceed weight ({weight})"
+        )
+
+    if now is None:
+        now = time.time()
+
+    age = now - created_at
+    if age < 0:
+        # Future timestamp — treat as zero age (no decay)
+        return weight
+
+    decayed = weight * (0.5 ** (age / half_life))
+    return max(min_weight, decayed)
 
 
 @dataclass
@@ -122,6 +178,92 @@ class ReasoningNode:
         if not self.children:
             return self.depth
         return max(c.max_child_depth for c in self.children)
+
+    def evidence_ratio_at(
+        self,
+        now: float | None = None,
+        half_life: float = 3600.0,
+        min_weight: float = 0.0,
+    ) -> float:
+        """Ratio of supporting to total evidence, with time decay.
+
+        Like :pyattr:`evidence_ratio` but each evidence point's weight is
+        first decayed via :pyfunc:`evidential_decay`.  Fresh evidence
+        contributes fully; stale evidence contributes less.
+
+        Args:
+            now: Current time (defaults to ``time.time()``).
+            half_life: Evidential half-life in seconds.
+            min_weight: Floor for decayed weights.
+
+        Returns:
+            Decayed evidence ratio in [0, 1]. 0.5 = balanced.
+        """
+        if not self.evidence_for and not self.evidence_against:
+            return 0.5
+        weighted_for = sum(
+            evidential_decay(e.weight, e.created_at, now=now,
+                             half_life=half_life, min_weight=min_weight)
+            for e in self.evidence_for
+        )
+        weighted_against = sum(
+            evidential_decay(e.weight, e.created_at, now=now,
+                             half_life=half_life, min_weight=min_weight)
+            for e in self.evidence_against
+        )
+        total_weight = weighted_for + weighted_against
+        if total_weight == 0:
+            return 0.5
+        return weighted_for / total_weight
+
+    def decay_weights(
+        self,
+        now: float | None = None,
+        half_life: float = 3600.0,
+        min_weight: float = 0.0,
+    ) -> None:
+        """Apply evidential decay to all evidence in this node (in-place).
+
+        Replaces each ``EvidencePoint.weight`` with its decayed value.
+        Because ``EvidencePoint`` is frozen, this replaces the objects
+        in ``evidence_for`` and ``evidence_against`` lists.
+
+        This is a convenience method for batch decay. For single-point
+        queries, use :pyfunc:`evidential_decay` directly.
+
+        Args:
+            now: Current time (defaults to ``time.time()``).
+            half_life: Evidential half-life in seconds.
+            min_weight: Floor for decayed weights.
+        """
+        self.evidence_for = [
+            EvidencePoint(
+                content=e.content,
+                supports=e.supports,
+                weight=evidential_decay(
+                    e.weight, e.created_at, now=now,
+                    half_life=half_life, min_weight=min_weight,
+                ),
+                source=e.source,
+                id=e.id,
+                created_at=e.created_at,
+            )
+            for e in self.evidence_for
+        ]
+        self.evidence_against = [
+            EvidencePoint(
+                content=e.content,
+                supports=e.supports,
+                weight=evidential_decay(
+                    e.weight, e.created_at, now=now,
+                    half_life=half_life, min_weight=min_weight,
+                ),
+                source=e.source,
+                id=e.id,
+                created_at=e.created_at,
+            )
+            for e in self.evidence_against
+        ]
 
 
 @dataclass
@@ -646,12 +788,14 @@ class RecursiveReasoningEngine:
 
     def __init__(
         self,
-        attention_system: Any = None,  # AttentionEquilibriumSystem for context
+        attention_system: Any = None, # AttentionEquilibriumSystem for context
         *,
-        decomposer_fn: Any = None,  # Callable[[str, list[EvidencePoint]], list[str]]
-        evidence_fn: Any = None,    # Callable[[str, list[str]], list[EvidencePoint]]
-        action_composer_fn: Any = None,  # Callable[[str, list[EvidencePoint]], list[dict]]
-        calibrator: ConfidenceCalibrator | None = None,  # External calibrator (shared)
+        decomposer_fn: Any = None, # Callable[[str, list[EvidencePoint]], list[str]]
+        evidence_fn: Any = None, # Callable[[str, list[str]], list[EvidencePoint]]
+        action_composer_fn: Any = None, # Callable[[str, list[EvidencePoint]], list[dict]]
+        calibrator: ConfidenceCalibrator | None = None, # External calibrator (shared)
+        evidential_half_life: float = float('inf'),
+        evidential_min_weight: float = 0.0,
     ):
         """Initialize the reasoning engine.
 
@@ -661,7 +805,21 @@ class RecursiveReasoningEngine:
             evidence_fn: Optional custom evidence gathering function.
             action_composer_fn: Optional custom action composition function.
             calibrator: Optional shared ConfidenceCalibrator for metacognition.
+            evidential_half_life: Seconds for evidence weight to halve via
+                exponential decay. Default ``inf`` (no decay — backward
+                compatible). Set to e.g. 3600.0 for 1-hour half-life.
+            evidential_min_weight: Floor for decayed evidence weights.
+                Default 0.0 (decayed evidence can vanish entirely).
         """
+        if evidential_half_life <= 0:
+            raise ValueError(
+                f"evidential_half_life must be positive, got {evidential_half_life}"
+            )
+        if evidential_min_weight < 0:
+            raise ValueError(
+                f"evidential_min_weight must be >= 0, got {evidential_min_weight}"
+            )
+
         self._attention = attention_system
         self._decomposer_fn = decomposer_fn
         self._evidence_fn = evidence_fn
@@ -669,6 +827,10 @@ class RecursiveReasoningEngine:
 
         # Calibrator: create default if none provided
         self._calibrator = calibrator if calibrator is not None else ConfidenceCalibrator()
+
+        # Evidential decay parameters
+        self._evidential_half_life = evidential_half_life
+        self._evidential_min_weight = evidential_min_weight
 
         # Tension profile cache (set by pillar wrapper each tick)
         self._current_profile: dict[TensionID, float] = dict(self._DEFAULT_PROFILE)
@@ -846,6 +1008,16 @@ class RecursiveReasoningEngine:
     def calibrator(self) -> ConfidenceCalibrator:
         """The confidence calibrator for metacognitive feedback."""
         return self._calibrator
+
+    @property
+    def evidential_half_life(self) -> float:
+        """Current evidential decay half-life in seconds (inf = no decay)."""
+        return self._evidential_half_life
+
+    @property
+    def evidential_min_weight(self) -> float:
+        """Floor for decayed evidence weights."""
+        return self._evidential_min_weight
 
     def calibrate(self, predicted_confidence: float, actual_success: bool) -> dict[str, Any]:
         """Record an outcome and optionally adjust weights.
@@ -1374,6 +1546,10 @@ class RecursiveReasoningEngine:
 
         C(node) = evidence_ratio × w_evidence + mean(children_confidences) × w_child
 
+        When evidential decay is enabled (finite ``evidential_half_life``),
+        the evidence_ratio is computed with time decay so that stale
+        evidence contributes less to the confidence estimate.
+
         The weights (w_evidence, w_child) are dynamically adjusted by the
         ConfidenceCalibrator based on observed outcomes. Default: (0.7, 0.3).
 
@@ -1383,7 +1559,14 @@ class RecursiveReasoningEngine:
         w_ev = self._calibrator.evidence_weight
         w_ch = self._calibrator.child_weight
 
-        evidence_ratio = node.evidence_ratio
+        # Use decayed evidence ratio when half-life is finite
+        if self._evidential_half_life < float('inf'):
+            evidence_ratio = node.evidence_ratio_at(
+                half_life=self._evidential_half_life,
+                min_weight=self._evidential_min_weight,
+            )
+        else:
+            evidence_ratio = node.evidence_ratio
 
         if not node.children:
             # Terminal: evidence-based, scaled by calibrated weights

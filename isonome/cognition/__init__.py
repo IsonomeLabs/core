@@ -25,6 +25,7 @@ from isonome.cognition.reasoning import (
     ReasoningPlan,
     ReasoningStats,
     RecursiveReasoningEngine,
+    evidential_decay,
 )
 from isonome.cognition.pillar import CognitionPillar
 
@@ -47,6 +48,7 @@ __all__ = [
     "ReasoningPlan",
     "ReasoningStats",
     "RecursiveReasoningEngine",
+    "evidential_decay",
     # Pillar
     "CognitionPillar",
 ]
