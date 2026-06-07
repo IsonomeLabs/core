@@ -186,6 +186,182 @@ class ChunkPriorityQueue:
             "total_dropped": self._total_dropped,
         }
 
+
+
+class ChunkSplitter:
+    """Splits an AttentionChunk into fragments that fit within a token budget.
+
+    When a chunk is too large to fit in the remaining budget, the splitter
+    breaks it into smaller fragments (by token count) so that at least the
+    leading portion can be admitted. Remaining fragments are buffered in the
+    rejected queue for later retry.
+
+    Fragment metadata:
+    - importance_tags: inherited from the original chunk (all fragments get
+      the same tags, since importance is a property of the whole, not the part).
+    - task_relevance: inherited from the original chunk.
+    - mutual_info: distributed proportionally (fragment_tokens / total_tokens).
+    - surprisal: distributed proportionally (fragment_tokens / total_tokens).
+    - recency: set to 1.0 (newest) for all fragments.
+
+    Args:
+        min_fragment_tokens: Minimum token count for a fragment to be kept.
+            Fragments smaller than this are dropped (their tokens are lost).
+            Default 1 (keep all fragments).
+    """
+
+    def __init__(self, min_fragment_tokens: int = 1) -> None:
+        if min_fragment_tokens < 1:
+            raise ValueError(
+                f"min_fragment_tokens must be positive, got {min_fragment_tokens}"
+            )
+        self._min_fragment_tokens = min_fragment_tokens
+        self._total_splits: int = 0
+        self._total_fragments_produced: int = 0
+        self._total_fragments_dropped: int = 0
+
+    def split(
+        self,
+        chunk: "AttentionChunk",
+        max_fragment_tokens: int,
+    ) -> list["AttentionChunk"]:
+        """Split a chunk into fragments of at most max_fragment_tokens each.
+
+        Args:
+            chunk: The chunk to split.
+            max_fragment_tokens: Maximum token count per fragment.
+
+        Returns:
+            List of fragment AttentionChunks, ordered from first to last.
+            Fragments below min_fragment_tokens are dropped.
+
+        Raises:
+            ValueError: If max_fragment_tokens is not positive.
+        """
+        if max_fragment_tokens < 1:
+            raise ValueError(
+                f"max_fragment_tokens must be positive, got {max_fragment_tokens}"
+            )
+
+        # No split needed if chunk fits in one fragment
+        if chunk.token_count <= max_fragment_tokens:
+            # But drop if the single fragment is below min_fragment_tokens
+            if chunk.token_count < self._min_fragment_tokens:
+                self._total_fragments_dropped += 1
+                return []
+            # Return a fresh copy with same data but new UUID for consistency
+            frag_fraction = 1.0
+            fragment = AttentionChunk(
+                content=chunk.content,
+                token_count=chunk.token_count,
+                surprisal=chunk.surprisal * frag_fraction,
+                mutual_info=chunk.mutual_info * frag_fraction,
+                recency=1.0,
+                task_relevance=chunk.task_relevance,
+                importance_tags=chunk.importance_tags,
+            )
+            return [fragment]
+
+        self._total_splits += 1
+
+        # Split content proportionally by words
+        words = chunk.content.split()
+        total_words = len(words)
+
+        if total_words == 0:
+            # Edge case: empty or whitespace-only content
+            return self._make_numeric_fragments(chunk, max_fragment_tokens)
+
+        # Distribute words proportionally across fragments
+        fragments: list["AttentionChunk"] = []
+        tokens_remaining = chunk.token_count
+        word_idx = 0
+
+        while tokens_remaining > 0:
+            frag_tokens = min(max_fragment_tokens, tokens_remaining)
+            # Proportional word allocation
+            frag_word_count = max(
+                1, round(total_words * frag_tokens / chunk.token_count)
+            )
+            frag_word_count = min(frag_word_count, total_words - word_idx)
+            if frag_word_count <= 0 and word_idx < total_words:
+                frag_word_count = total_words - word_idx
+
+            frag_words = words[word_idx : word_idx + frag_word_count]
+            frag_content = " ".join(frag_words)
+            word_idx += frag_word_count
+
+            # Drop fragments that are too small
+            if frag_tokens < self._min_fragment_tokens:
+                self._total_fragments_dropped += 1
+                tokens_remaining -= frag_tokens
+                continue
+
+            frag_fraction = frag_tokens / chunk.token_count
+
+            fragment = AttentionChunk(
+                content=frag_content,
+                token_count=frag_tokens,
+                surprisal=chunk.surprisal * frag_fraction,
+                mutual_info=chunk.mutual_info * frag_fraction,
+                recency=1.0,  # Freshly created = newest
+                task_relevance=chunk.task_relevance,
+                importance_tags=chunk.importance_tags,
+            )
+            fragments.append(fragment)
+            self._total_fragments_produced += 1
+            tokens_remaining -= frag_tokens
+
+        return fragments
+
+    def _make_numeric_fragments(
+        self,
+        chunk: "AttentionChunk",
+        max_fragment_tokens: int,
+    ) -> list["AttentionChunk"]:
+        """Create fragments when content is empty (numeric-only splitting)."""
+        fragments: list["AttentionChunk"] = []
+        tokens_remaining = chunk.token_count
+
+        while tokens_remaining > 0:
+            frag_tokens = min(max_fragment_tokens, tokens_remaining)
+
+            if frag_tokens < self._min_fragment_tokens:
+                self._total_fragments_dropped += 1
+                tokens_remaining -= frag_tokens
+                continue
+
+            frag_fraction = frag_tokens / chunk.token_count
+
+            fragment = AttentionChunk(
+                content=chunk.content,  # Empty or same for all
+                token_count=frag_tokens,
+                surprisal=chunk.surprisal * frag_fraction,
+                mutual_info=chunk.mutual_info * frag_fraction,
+                recency=1.0,
+                task_relevance=chunk.task_relevance,
+                importance_tags=chunk.importance_tags,
+            )
+            fragments.append(fragment)
+            self._total_fragments_produced += 1
+            tokens_remaining -= frag_tokens
+
+        return fragments
+
+    @property
+    def min_fragment_tokens(self) -> int:
+        """Minimum token count for a fragment to be kept."""
+        return self._min_fragment_tokens
+
+    @property
+    def stats(self) -> dict:
+        """Splitter statistics."""
+        return {
+            "total_splits": self._total_splits,
+            "total_fragments_produced": self._total_fragments_produced,
+            "total_fragments_dropped": self._total_fragments_dropped,
+        }
+
 @dataclass(frozen=True, slots=True)
 class AttentionChunk:
     """A single chunk of context being managed by the attention system.
@@ -313,6 +489,8 @@ class AttentionEquilibriumSystem:
         enforcement_policy: BudgetEnforcementPolicy = BudgetEnforcementPolicy.AUTO_GC,
         enforcement_threshold: float = 0.85,
         rejected_queue_capacity: int = 64,
+        split_threshold: float = 0.0,
+        min_fragment_tokens: int = 1,
     ):
         """Initialize the attention equilibrium system.
 
@@ -327,6 +505,13 @@ class AttentionEquilibriumSystem:
                 enforce_budget() triggers auto-GC. Default 0.85 (85% full).
             rejected_queue_capacity: Max chunks in the rejected-chunk buffer.
                 Set to 0 to disable rejected-chunk buffering. Default 64.
+        Set to 0 to disable rejected-chunk buffering. Default 64.
+        split_threshold: Utilization fraction [0.0, 1.0] at which chunk
+        splitting becomes active. When utilization >= split_threshold and
+        a chunk doesn't fit, it is split into fragments that fit.
+        Default 0.0 (splitting disabled).
+        min_fragment_tokens: Minimum token count for a split fragment to
+        be kept. Fragments below this are dropped. Default 1.
         """
         self._engine = engine
         self._budget = AttentionBudget(token_capacity=token_capacity)
@@ -344,6 +529,14 @@ class AttentionEquilibriumSystem:
         if rejected_queue_capacity > 0:
             self._rejected_queue = ChunkPriorityQueue(
                 max_size=rejected_queue_capacity
+            )
+
+        # Chunk splitter (iter-027)
+        self._split_threshold = max(0.0, min(1.0, split_threshold))
+        self._splitter: ChunkSplitter | None = None
+        if self._split_threshold > 0.0:
+            self._splitter = ChunkSplitter(
+                min_fragment_tokens=min_fragment_tokens
             )
 
         # Enforcement statistics
@@ -423,13 +616,24 @@ class AttentionEquilibriumSystem:
             if policy == BudgetEnforcementPolicy.REJECT:
                 # Check if chunk would exceed capacity
                 if self._budget.tokens_used + token_count > self._budget.token_capacity:
+                    # Try splitting before rejecting
+                    split_result = self._attempt_split(
+                        content, token_count, mutual_info, task_relevance, importance_tags
+                    )
+                    if split_result is not None:
+                        return split_result
                     self._enforcement_rejections += 1
                     self._buffer_rejected(content, token_count, mutual_info, task_relevance, importance_tags)
                     return None
-                # Under threshold: no enforcement needed yet
-                # but above threshold: still reject if over capacity
-                if self._budget.utilization >= self._enforcement_threshold:
+                # Under budget but at/above threshold: still reject if over capacity
+                elif self._budget.utilization >= self._enforcement_threshold:
                     if self._budget.tokens_used + token_count > self._budget.token_capacity:
+                        # Try splitting before rejecting
+                        split_result = self._attempt_split(
+                            content, token_count, mutual_info, task_relevance, importance_tags
+                        )
+                        if split_result is not None:
+                            return split_result
                         self._enforcement_rejections += 1
                         self._buffer_rejected(content, token_count, mutual_info, task_relevance, importance_tags)
                         return None
@@ -442,6 +646,12 @@ class AttentionEquilibriumSystem:
 
                 # Check if GC freed enough space
                 if self._budget.tokens_used + token_count > self._budget.token_capacity:
+                    # Try splitting before falling back to compress/reject
+                    split_result = self._attempt_split(
+                        content, token_count, mutual_info, task_relevance, importance_tags
+                    )
+                    if split_result is not None:
+                        return split_result
                     if policy == BudgetEnforcementPolicy.AUTO_COMPRESS:
                         # Try to compress the incoming chunk
                         compressed_tokens = int(token_count * self._compress_ratio)
@@ -477,6 +687,76 @@ class AttentionEquilibriumSystem:
         self._budget.tokens_used += token_count
 
         return chunk
+
+    def _attempt_split(
+        self,
+        content: str,
+        token_count: int,
+        mutual_info: float,
+        task_relevance: float,
+        importance_tags: tuple[str, ...],
+    ) -> AttentionChunk | None:
+        """Attempt to split an incoming chunk that doesn't fit in the budget.
+
+        If the splitter is enabled (split_threshold > 0) and current
+        utilization >= split_threshold, splits the chunk into fragments
+        that fit within the remaining budget. The first fragment that
+        fits is admitted; remaining fragments go to the rejected queue.
+
+        Returns the admitted fragment, or None if splitting is disabled
+        or no fragment could be admitted.
+        """
+        if self._splitter is None:
+            return None
+
+        if self._budget.utilization < self._split_threshold:
+            return None
+
+        remaining_capacity = self._budget.token_capacity - self._budget.tokens_used
+        if remaining_capacity < 1:
+            return None
+
+        # Create a temporary chunk to split
+        temp_chunk = AttentionChunk(
+            content=content,
+            token_count=token_count,
+            mutual_info=mutual_info,
+            task_relevance=task_relevance,
+            importance_tags=importance_tags,
+        )
+
+        fragments = self._splitter.split(temp_chunk, max_fragment_tokens=remaining_capacity)
+
+        if not fragments:
+            return None
+
+        # Admit the first fragment
+        first = fragments[0]
+
+        # Buffer remaining fragments in rejected queue
+        for frag in fragments[1:]:
+            if self._rejected_queue is not None:
+                self._rejected_queue.enqueue(frag)
+
+        # Update frequencies and compute surprisal for the admitted fragment
+        self._update_token_frequencies(first.content)
+        surprisal = self._compute_surprisal(first.content)
+
+        # Create the final admitted chunk with computed surprisal
+        admitted = AttentionChunk(
+            content=first.content,
+            token_count=first.token_count,
+            surprisal=surprisal,
+            mutual_info=first.mutual_info,
+            recency=1.0,
+            task_relevance=first.task_relevance,
+            importance_tags=first.importance_tags,
+        )
+
+        self._chunks[admitted.id] = admitted
+        self._budget.tokens_used += admitted.token_count
+
+        return admitted
 
     def _buffer_rejected(
         self,
@@ -559,6 +839,12 @@ class AttentionEquilibriumSystem:
                 self.__class__._sentinel_queue = ChunkPriorityQueue(max_size=1)
             return self.__class__._sentinel_queue
         return self._rejected_queue
+
+
+    @property
+    def splitter(self) -> ChunkSplitter | None:
+        """The chunk splitter, or None if splitting is disabled."""
+        return self._splitter
 
     def set_calibration_state(
         self,
@@ -930,6 +1216,11 @@ class AttentionEquilibriumSystem:
                 "post_gc_rejections": self._enforcement_post_gc_rejections,
             },
             "rejected_queue": self.rejected_queue.stats,
+            "splitting": self._splitter.stats if self._splitter is not None else {
+                "total_splits": 0,
+                "total_fragments_produced": 0,
+                "total_fragments_dropped": 0,
+            },
         }
 
     @property
