@@ -79,6 +79,9 @@ class CognitionPillar(BasePillar):
         auto_gc: bool = True,
         gc_utilization_threshold: float = 0.80,
         mneme_pillar: Any | None = None,
+        momentum_drifting_multiplier: float = 1.5,
+        momentum_approaching_multiplier: float = 0.5,
+        momentum_stress_modulation_enabled: bool = True,
     ):
         """Initialize the Cognition pillar.
 
@@ -93,8 +96,19 @@ class CognitionPillar(BasePillar):
             gc_utilization_threshold: Auto-GC trigger threshold [0, 1].
             mneme_pillar: Optional MnemePillar reference for pushing
                 calibration state on each tick.
+            momentum_drifting_multiplier: Multiplier for stress feedback
+                when axis is drifting away (default 1.5, >1.0 = stronger pull).
+            momentum_approaching_multiplier: Multiplier for stress feedback
+                when axis is approaching default (default 0.5, <1.0 = weaker pull).
+            momentum_stress_modulation_enabled: Whether momentum modulation
+                of stress feedback is active (default True).
         """
-        super().__init__(name=name)
+        super().__init__(
+            name=name,
+            momentum_drifting_multiplier=momentum_drifting_multiplier,
+            momentum_approaching_multiplier=momentum_approaching_multiplier,
+            momentum_stress_modulation_enabled=momentum_stress_modulation_enabled,
+        )
         self._engine = engine
         self._token_capacity = token_capacity
         self._compress_ratio = compress_ratio

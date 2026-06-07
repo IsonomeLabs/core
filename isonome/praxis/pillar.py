@@ -74,6 +74,9 @@ class PraxisPillar(BasePillar):
         default_retry_policy: RetryPolicy | None = None,
         confidence_calibrator: Any = None,  # ConfidenceCalibrator for safety gating
     delegation_gate: DelegationGate | None = None, # Calibration-gated delegation
+    momentum_drifting_multiplier: float = 1.5,
+    momentum_approaching_multiplier: float = 0.5,
+    momentum_stress_modulation_enabled: bool = True,
     ):
         """Initialize the Praxis pillar.
 
@@ -85,8 +88,19 @@ class PraxisPillar(BasePillar):
             max_parallel: Maximum concurrent executions.
             default_retry_policy: Fallback retry policy.
     delegation_gate: Optional DelegationGate for calibration-gated delegation.
+            momentum_drifting_multiplier: Multiplier for stress feedback
+                when axis is drifting away (default 1.5, >1.0 = stronger pull).
+            momentum_approaching_multiplier: Multiplier for stress feedback
+                when axis is approaching default (default 0.5, <1.0 = weaker pull).
+            momentum_stress_modulation_enabled: Whether momentum modulation
+                of stress feedback is active (default True).
         """
-        super().__init__(name=name)
+        super().__init__(
+            name=name,
+            momentum_drifting_multiplier=momentum_drifting_multiplier,
+            momentum_approaching_multiplier=momentum_approaching_multiplier,
+            momentum_stress_modulation_enabled=momentum_stress_modulation_enabled,
+        )
         self._executor_fn = executor_fn
         self._validator_fn = validator_fn
         self._approve_fn = approve_fn

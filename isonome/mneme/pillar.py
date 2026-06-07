@@ -48,8 +48,16 @@ class MnemePillar(BasePillar):
         *,
         consolidation_significance: float | None = None,
         promotion_significance: float | None = None,
+        momentum_drifting_multiplier: float = 1.5,
+        momentum_approaching_multiplier: float = 0.5,
+        momentum_stress_modulation_enabled: bool = True,
     ):
-        super().__init__(name=name)
+        super().__init__(
+            name=name,
+            momentum_drifting_multiplier=momentum_drifting_multiplier,
+            momentum_approaching_multiplier=momentum_approaching_multiplier,
+            momentum_stress_modulation_enabled=momentum_stress_modulation_enabled,
+        )
         self.mneme: HierarchicalMneme | None = None
         self._cons_sig = consolidation_significance
         self._prom_sig = promotion_significance
