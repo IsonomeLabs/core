@@ -652,6 +652,141 @@
  background: var(--accent-amber) !important;
 }
 
+/* ── Tension Event Log ───────────────────────────────── */
+.eventlog-summary {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 10px;
+    justify-content: center;
+}
+.eventlog-summary-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+}
+.eventlog-summary-num {
+    font-family: inherit;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-bright);
+}
+.eventlog-summary-label {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.eventlog-breakdowns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+.eventlog-breakdown {
+    background: var(--surface2);
+    padding: 8px;
+}
+.eventlog-breakdown-title {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 6px;
+}
+.eventlog-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 10px;
+}
+.eventlog-bar-label {
+    width: 80px;
+    color: var(--text);
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+.eventlog-bar-track {
+    flex: 1;
+    height: 8px;
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    overflow: hidden;
+}
+.eventlog-bar-fill {
+    height: 100%;
+    opacity: 0.7;
+}
+.eventlog-bar-fill.type-feedback { background: var(--accent-cyan); }
+.eventlog-bar-fill.type-oscillation { background: var(--accent-red); }
+.eventlog-bar-fill.type-default_adjustment { background: var(--accent-amber); }
+.eventlog-bar-fill.pillar-cognition { background: var(--accent-cyan); }
+.eventlog-bar-fill.pillar-praxis { background: var(--accent-amber); }
+.eventlog-bar-fill.pillar-mneme { background: var(--accent-green); }
+.eventlog-bar-fill.axis-other { background: var(--text-dim); }
+.eventlog-bar-count {
+    width: 28px;
+    text-align: right;
+    font-family: inherit;
+    font-weight: 600;
+    color: var(--text-bright);
+}
+.eventlog-feed-title {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+}
+.eventlog-feed {
+    max-height: 180px;
+    overflow-y: auto;
+    font-size: 10px;
+}
+.eventlog-feed-row {
+    display: grid;
+    grid-template-columns: 70px 60px 1fr 50px;
+    gap: 6px;
+    padding: 3px 4px;
+    background: var(--surface2);
+    margin-bottom: 1px;
+    align-items: center;
+}
+.eventlog-feed-time {
+    color: var(--text-dim);
+    font-size: 9px;
+}
+.eventlog-feed-type {
+    font-weight: 600;
+    font-size: 9px;
+    text-transform: uppercase;
+}
+.eventlog-feed-type.type-feedback { color: var(--accent-cyan); }
+.eventlog-feed-type.type-oscillation { color: var(--accent-red); }
+.eventlog-feed-type.type-default_adjustment { color: var(--accent-amber); }
+.eventlog-feed-axis {
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.eventlog-feed-delta {
+    text-align: right;
+    font-family: inherit;
+    font-weight: 600;
+    font-size: 10px;
+}
+.eventlog-no-data {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-style: italic;
+    padding: 8px 0;
+}
+
 /* ── Responsive ──────────────────────────────────────── */
 @media (max-width: 900px) {
  .dashboard { grid-template-columns: 1fr; }
@@ -941,7 +1076,15 @@
     </div>
   </div>
 
-</div>
+  <!-- Tension Event Log -->
+  <div class="panel panel-wide">
+      <div class="panel-title">TENSION EVENT LOG</div>
+      <div id="eventlog-container">
+          <div class="eventlog-no-data">No event log data</div>
+      </div>
+  </div>
+
+  </div>
 
 <script>
 // State polling
@@ -983,6 +1126,7 @@ function render(state) {
   renderStress(state);
   renderPillars(state);
   renderVelocity(state);
+  renderEventLog(state);
   renderAttention(state);
   renderMneme(state);
   renderCalibration(state);
@@ -1212,6 +1356,104 @@ function buildSparkline(history, defaultPos, strokeColor) {
   const midLine = `<line x1="0" y1="${H/2}" x2="${W}" y2="${H/2}" stroke="var(--border)" stroke-width="0.3" opacity="0.3"/>`;
 
   return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${midLine}${defaultLine}${polyline}</svg>`;
+}
+
+function renderEventLog(state) {
+    const container = document.getElementById("eventlog-container");
+    const el = state.event_log;
+
+    if (!el) {
+        container.innerHTML = '<div class="eventlog-no-data">No event log data</div>';
+        return;
+    }
+
+    let html = '';
+
+    // Summary row: total events, feedback density, most active axis
+    html += '<div class="eventlog-summary">';
+    html += '<div class="eventlog-summary-item">';
+    html += '<span class="eventlog-summary-num">' + (el.total_events || 0) + '</span>';
+    html += '<span class="eventlog-summary-label">Total Events</span>';
+    html += '</div>';
+    html += '<div class="eventlog-summary-item">';
+    html += '<span class="eventlog-summary-num">' + (el.feedback_density != null ? el.feedback_density.toFixed(3) : '—') + '</span>';
+    html += '<span class="eventlog-summary-label">Feedback Density</span>';
+    html += '</div>';
+    html += '<div class="eventlog-summary-item">';
+    html += '<span class="eventlog-summary-num" style="font-size:12px">' + (el.most_active_axis || '—').replace(/_/g, ' ↔ ') + '</span>';
+    html += '<span class="eventlog-summary-label">Most Active Axis</span>';
+    html += '</div>';
+    html += '</div>';
+
+    // Breakdowns: type + pillar side by side
+    const maxCount = Math.max(
+        ...Object.values(el.type_breakdown || {}),
+        ...Object.values(el.pillar_breakdown || {}),
+        1
+    );
+
+    html += '<div class="eventlog-breakdowns">';
+
+    // Type breakdown
+    html += '<div class="eventlog-breakdown">';
+    html += '<div class="eventlog-breakdown-title">By Event Type</div>';
+    const typeBreakdown = el.type_breakdown || {};
+    for (const [type, count] of Object.entries(typeBreakdown)) {
+        const pct = (count / maxCount * 100).toFixed(1);
+        html += '<div class="eventlog-bar-row">';
+        html += '<span class="eventlog-bar-label">' + escapeHtml(type.replace(/_/g, ' ')) + '</span>';
+        html += '<div class="eventlog-bar-track"><div class="eventlog-bar-fill type-' + type + '" style="width:' + pct + '%"></div></div>';
+        html += '<span class="eventlog-bar-count">' + count + '</span>';
+        html += '</div>';
+    }
+    if (Object.keys(typeBreakdown).length === 0) {
+        html += '<div style="font-size:10px;color:var(--text-dim)">No events yet</div>';
+    }
+    html += '</div>';
+
+    // Pillar breakdown
+    html += '<div class="eventlog-breakdown">';
+    html += '<div class="eventlog-breakdown-title">By Pillar</div>';
+    const pillarBreakdown = el.pillar_breakdown || {};
+    for (const [pillar, count] of Object.entries(pillarBreakdown)) {
+        const pct = (count / maxCount * 100).toFixed(1);
+        html += '<div class="eventlog-bar-row">';
+        html += '<span class="eventlog-bar-label">' + escapeHtml(pillar) + '</span>';
+        html += '<div class="eventlog-bar-track"><div class="eventlog-bar-fill pillar-' + pillar + '" style="width:' + pct + '%"></div></div>';
+        html += '<span class="eventlog-bar-count">' + count + '</span>';
+        html += '</div>';
+    }
+    if (Object.keys(pillarBreakdown).length === 0) {
+        html += '<div style="font-size:10px;color:var(--text-dim)">No events yet</div>';
+    }
+    html += '</div>';
+
+    html += '</div>';
+
+    // Recent events feed
+    const recent = el.recent_events || [];
+    if (recent.length > 0) {
+        html += '<div class="eventlog-feed-title">Recent Events (last ' + recent.length + ')</div>';
+        html += '<div class="eventlog-feed">';
+        // Show in reverse order (newest first)
+        const reversed = [...recent].reverse();
+        for (const evt of reversed) {
+            const evtType = evt.event_type || 'unknown';
+            const tick = evt.tick != null ? evt.tick : '—';
+            const axis = (evt.axis || '—').replace(/_/g, ' ↔ ');
+            const delta = evt.delta != null ? (evt.delta >= 0 ? '+' : '') + evt.delta.toFixed(3) : '';
+
+            html += '<div class="eventlog-feed-row">';
+            html += '<span class="eventlog-feed-time">T' + tick + '</span>';
+            html += '<span class="eventlog-feed-type type-' + evtType + '">' + evtType.replace(/_/g, ' ') + '</span>';
+            html += '<span class="eventlog-feed-axis">' + escapeHtml(axis) + '</span>';
+            html += '<span class="eventlog-feed-delta">' + delta + '</span>';
+            html += '</div>';
+        }
+        html += '</div>';
+    }
+
+    container.innerHTML = html;
 }
 
 function renderAttention(state) {

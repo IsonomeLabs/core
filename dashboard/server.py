@@ -51,6 +51,7 @@ from isonome.cognition.pillar import CognitionPillar
 from isonome.praxis.pillar import PraxisPillar
 from isonome.mneme.pillar import MnemePillar
 from isonome.equilibrium.velocity import TensionVelocityTracker
+from isonome.equilibrium.event_log import TensionEventLog, TensionEventType
 from isonome.types import Task
 
 
@@ -257,6 +258,49 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
             "total_updates": vt.total_updates,
         }
 
+    # Tension event log
+    event_log_data = None
+    el = engine._event_log
+    if el is not None:
+        # Event type breakdown
+        counts_by_type = el.count_by_type()
+        type_breakdown = {
+            et.value: count for et, count in counts_by_type.items()
+        }
+
+        # Pillar breakdown
+        counts_by_source = el.count_by_source()
+        pillar_breakdown = {
+            p.value: count for p, count in counts_by_source.items()
+        }
+
+        # Axis breakdown (top 10 by activity)
+        counts_by_axis = el.count_by_axis()
+        axis_items = sorted(counts_by_axis.items(), key=lambda x: x[1], reverse=True)[:10]
+        axis_breakdown = {k: v for k, v in axis_items}
+
+        # Recent events (last 25)
+        recent = el.events()[-25:]
+        recent_list = [e.to_dict() for e in recent]
+
+        # Feedback density
+        feedback_density = el.feedback_density(window=10)
+
+        # Most active axis
+        most_active = el.most_active_axis()
+
+        event_log_data = {
+            "total_events": el.total_events,
+            "current_size": len(el._events),
+            "max_events": el.max_events,
+            "type_breakdown": type_breakdown,
+            "pillar_breakdown": pillar_breakdown,
+            "axis_breakdown": axis_breakdown,
+            "recent_events": recent_list,
+            "feedback_density": round(feedback_density, 3),
+            "most_active_axis": most_active or "",
+        }
+
     return {
         "agent": {
             "name": agent.identity.name,
@@ -280,6 +324,7 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
         "calibration": calibration,
         "task_type_profiles": profiles,
         "velocity": velocity_summary,
+        "event_log": event_log_data,
         "feedback_count": engine.total_feedback_received,
         "oscillation_events": engine.total_oscillation_events,
     }
@@ -306,6 +351,8 @@ class LiveAgent:
         self.agent.engine._velocity_tracker = TensionVelocityTracker()
         for axis in self.agent.engine._axes.values():
             self.agent.engine._velocity_tracker.register_axis(axis.id)
+        # Enable tension event logging for the event log dashboard panel
+        self.agent.engine._event_log = TensionEventLog()
         self.agent.start()
         self.tick_count = 0
         self._lock = threading.Lock()
