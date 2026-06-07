@@ -2,12 +2,12 @@
 
 Serves a real-time visualization dashboard for the isonome agent framework.
 Provides:
-  /            — Dashboard HTML
-  /api/state   — Full agent state as JSON (tensions, lifecycle, stats)
-  /api/demo    — Simulated agent with ticking for demo purposes
-  /sim         — URDF Sim Scaffold (new)
-  /api/upload-urdf  — Upload URDF or ZIP bundle
-  /api/sim/stream   — MJPEG proxy to Isaac Sim / mock bridge
+  /              — Dashboard HTML
+  /api/state     — Full agent state as JSON (tensions, lifecycle, stats)
+  /api/demo      — Simulated agent with ticking for demo purposes
+  /sim           — URDF Sim Scaffold (new)
+  /api/upload-urdf — Upload URDF or ZIP bundle
+  /api/sim/stream — MJPEG proxy to Isaac Sim / mock bridge
 
 Run: python server.py [--port 8420] [--demo]
 """
@@ -150,10 +150,33 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
 
     # Attention budget (if cognition pillar has attention)
     attention = None
-    if agent.cognition is not None and hasattr(agent.cognition, 'attention') and agent.cognition.attention is not None:
+    if (
+        agent.cognition is not None
+        and hasattr(agent.cognition, 'attention')
+        and agent.cognition.attention is not None
+    ):
         att = agent.cognition.attention
         att_stats = att.stats if isinstance(att.stats, dict) else att.stats.__dict__
         budget = att.budget
+
+        # Top chunks with scores and metadata
+        top_chunks_list = []
+        try:
+            for chunk in att.get_top_chunks(10):
+                chunk_score = chunk.attention_score()
+                top_chunks_list.append({
+                    "content": chunk.content[:120],  # truncate for dashboard
+                    "token_count": chunk.token_count,
+                    "attention_score": round(chunk_score, 4),
+                    "mutual_info": round(chunk.mutual_info, 4),
+                    "task_relevance": round(chunk.task_relevance, 4),
+                    "surprisal": round(chunk.surprisal, 4),
+                    "recency": round(chunk.recency, 4),
+                    "importance_tags": list(chunk.importance_tags),
+                })
+        except Exception:
+            pass  # Graceful fallback if scoring fails
+
         attention = {
             "token_capacity": budget.token_capacity,
             "tokens_used": budget.tokens_used,
@@ -164,6 +187,29 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
             "total_kept": att_stats.get("total_kept", 0),
             "total_compressed": att_stats.get("total_compressed", 0),
             "total_pruned": att_stats.get("total_pruned", 0),
+            "enforcement": att_stats.get("enforcement", {
+                "policy": "reject",
+                "threshold": 0.9,
+                "auto_gc_triggered": 0,
+                "rejections": 0,
+                "auto_compressions": 0,
+                "oversized_rejections": 0,
+                "post_gc_rejections": 0,
+            }),
+            "rejected_queue": att_stats.get("rejected_queue", {
+                "current_size": 0,
+                "max_size": 64,
+                "total_enqueued": 0,
+                "total_dequeued": 0,
+                "total_evicted": 0,
+                "total_dropped": 0,
+            }),
+            "splitting": att_stats.get("splitting", {
+                "total_splits": 0,
+                "total_fragments_produced": 0,
+                "total_fragments_dropped": 0,
+            }),
+            "top_chunks": top_chunks_list,
         }
 
     # Mneme stats
@@ -497,7 +543,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.end_headers()
 
             # Forward any remaining body data from headers read
-            body_remainder = header_data[headers_end + 4 :]
+            body_remainder = header_data[headers_end + 4:]
             if body_remainder:
                 self.wfile.write(body_remainder)
 
