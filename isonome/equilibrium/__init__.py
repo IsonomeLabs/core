@@ -31,6 +31,7 @@ from isonome.types import (
     now as now,
 )
 from isonome.equilibrium.velocity import TensionVelocityTracker
+from isonome.equilibrium.cooldown import FeedbackCooldownManager
 from isonome.equilibrium.event_log import (
     TensionEventLog as TensionEventLog,
     TensionEvent as TensionEvent,
@@ -101,6 +102,7 @@ class PillarEquilibriumView:
         "_oscillation_imminent",
         "_event_log",
         "_own_axis_ids",
+        "_feedback_cooldown",
     )
 
     def __init__(
@@ -111,6 +113,7 @@ class PillarEquilibriumView:
         oscillation_threshold: float,
         velocity_tracker: TensionVelocityTracker | None = None,
         event_log: TensionEventLog | None = None,
+        feedback_cooldown: FeedbackCooldownManager | None = None,
     ):
         # Split axes into own and cross-pillar
         self._pillar = pillar
@@ -130,6 +133,9 @@ class PillarEquilibriumView:
         # Event log for audit trail (None if disabled)
         self._event_log = event_log
         self._own_axis_ids: tuple[TensionID, ...] = ()
+
+        # Feedback cooldown manager (None if disabled)
+        self._feedback_cooldown = feedback_cooldown
 
         for axis_id, axis in axes.items():
             pos = axis.position
@@ -273,6 +279,30 @@ class PillarEquilibriumView:
         populated when velocity tracking is enabled.
         """
         return tuple(self._oscillation_imminent)
+
+    @property
+    def feedback_cooldown(self) -> FeedbackCooldownManager | None:
+        """The feedback cooldown manager, or None if not enabled."""
+        return self._feedback_cooldown
+
+    @property
+    def cooldown_axes(self) -> tuple[TensionID, ...]:
+        """Axes owned by this pillar that are currently under cooldown.
+
+        An axis is under cooldown if this pillar has sent repeated
+        feedback to it within the cooldown window (multiplier < 1.0).
+        Only populated when feedback cooldown is enabled.
+        """
+        if self._feedback_cooldown is None:
+            return ()
+        cooled = []
+        for axis_id in self._own_axes:
+            multiplier = self._feedback_cooldown.get_multiplier_for(
+                axis_id, self._pillar,
+            )
+            if multiplier < 1.0:
+                cooled.append(axis_id)
+        return tuple(cooled)
 
     # ── Convenience methods ───────────────────────────────────────
 
@@ -872,6 +902,8 @@ class EquilibriumEngine:
         event_log: TensionEventLog | None = None,
         enable_event_log: bool = False,
         event_log_max_events: int = 1000,
+        feedback_cooldown: FeedbackCooldownManager | None = None,
+        enable_feedback_cooldown: bool = False,
     ):
         """Initialize the equilibrium engine.
 
@@ -892,6 +924,12 @@ class EquilibriumEngine:
             enable_velocity_tracking: If True and velocity_tracker is None,
                 create a default TensionVelocityTracker. If False (default),
                 velocity tracking is disabled for backward compatibility.
+            feedback_cooldown: An existing FeedbackCooldownManager to bind.
+                If None and enable_feedback_cooldown is True, a default
+                manager is created automatically.
+            enable_feedback_cooldown: If True and feedback_cooldown is None,
+                create a default FeedbackCooldownManager. If False (default),
+                feedback cooldown is disabled for backward compatibility.
         """
         axes = tuple(axes) if axes is not None else self.DEFAULT_AXES
         # Initialize each axis with its position set to its default_position,
@@ -954,6 +992,14 @@ class EquilibriumEngine:
         else:
             self._event_log = None
 
+        # -- Feedback cooldown integration --
+        if feedback_cooldown is not None:
+            self._feedback_cooldown = feedback_cooldown
+        elif enable_feedback_cooldown:
+            self._feedback_cooldown = FeedbackCooldownManager()
+        else:
+            self._feedback_cooldown = None
+
         # ── Public API ───────────────────────────────────────────────
 
     @property
@@ -973,6 +1019,11 @@ class EquilibriumEngine:
     def event_log(self) -> TensionEventLog | None:
         """The tension event log, or None if not enabled."""
         return self._event_log
+
+    @property
+    def feedback_cooldown(self) -> FeedbackCooldownManager | None:
+        """The feedback cooldown manager, or None if not enabled."""
+        return self._feedback_cooldown
 
 
     def snapshot(self, agent_id=None, trigger=None) -> TensionSnapshot:
@@ -1010,6 +1061,13 @@ class EquilibriumEngine:
         # Weight the signal by confidence — low-confidence feedback
         # moves the needle less
         effective_delta = feedback.signal * feedback.confidence
+
+        # Apply feedback cooldown damping if enabled
+        if self._feedback_cooldown is not None:
+            cooldown_mult = self._feedback_cooldown.check_and_apply(
+                feedback.tension_axis_id, feedback.source, self._feedback_count
+            )
+            effective_delta *= cooldown_mult
 
         # Apply adaptive damping if controller is enabled
         if self._adaptive_damping is not None:
@@ -1078,6 +1136,12 @@ class EquilibriumEngine:
             if axis is None:
                 continue
             effective_delta = fb.signal * fb.confidence
+            # Apply feedback cooldown damping if enabled
+            if self._feedback_cooldown is not None:
+                cooldown_mult = self._feedback_cooldown.check_and_apply(
+                    fb.tension_axis_id, fb.source, self._feedback_count
+                )
+                effective_delta *= cooldown_mult
             # Apply adaptive damping if available
             if self._adaptive_damping is not None:
                 adaptive_d = self._adaptive_damping.effective_damping(
@@ -1266,6 +1330,7 @@ class EquilibriumEngine:
             oscillation_threshold=self._oscillation_threshold,
             velocity_tracker=self._velocity_tracker,
             event_log=self._event_log,
+            feedback_cooldown=self._feedback_cooldown,
         )
 
     # ── Internal ─────────────────────────────────────────────────
@@ -1350,6 +1415,9 @@ class EquilibriumEngine:
             ),
             "event_log_state": (
                 self._event_log.to_dict() if self._event_log is not None else None
+            ),
+            "feedback_cooldown_state": (
+                self._feedback_cooldown.to_dict() if self._feedback_cooldown is not None else None
             ),
             }
 
@@ -1447,5 +1515,10 @@ class EquilibriumEngine:
         if el_state is not None:
             from isonome.equilibrium.event_log import TensionEventLog
             engine._event_log = TensionEventLog.from_dict(el_state)
+
+        # Restore feedback cooldown if present
+        fc_state = data.get("feedback_cooldown_state")
+        if fc_state is not None:
+            engine._feedback_cooldown = FeedbackCooldownManager.from_dict(fc_state)
 
         return engine
