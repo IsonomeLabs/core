@@ -299,11 +299,27 @@ class MuJoCoBridge:
                 self._joint_names.append(name)
                 self._joint_map[name] = i
 
-        # Initialize renderer
+        # Initialize renderer with camera
         self._renderer = mujoco.Renderer(self._model, height=480, width=640)
+        self._camera = mujoco.MjvCamera()
+        self._camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+        self._camera.trackbodyid = self._model.nbody - 1
+        self._camera.distance = 1.8
+        self._camera.azimuth = 135
+        self._camera.elevation = -20
 
-        # Set initial pose
+        # Set initial pose with random perturbation so gravity produces motion
+        import random
         mujoco.mj_resetData(self._model, self._data)
+        for i in range(self._model.njnt):
+            qposadr = self._model.jnt_qposadr[i]
+            jnt_type = self._model.jnt_type[i]
+            if jnt_type == mujoco.mjtJoint.mjJNT_HINGE:
+                self._data.qpos[qposadr] = random.uniform(-0.8, 0.8)
+            elif jnt_type == mujoco.mjtJoint.mjJNT_SLIDE:
+                self._data.qpos[qposadr] = random.uniform(-0.1, 0.1)
+        mujoco.mj_forward(self._model, self._data)
+
         self._start_time = time.time()
         self._playing = True
 
@@ -380,7 +396,11 @@ class MuJoCoBridge:
         if not HAS_MUJOCO or self._renderer is None or self._data is None:
             return None
         try:
-            self._renderer.update_scene(self._data)
+            cam = getattr(self, "_camera", None)
+            if cam is not None:
+                self._renderer.update_scene(self._data, camera=cam)
+            else:
+                self._renderer.update_scene(self._data)
             frame = self._renderer.render()
             # frame is [H, W, 3] RGB uint8
             return frame
