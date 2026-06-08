@@ -200,10 +200,25 @@ class MuJoCoBridge:
                 "webrtc": HAS_AIORRTC,
             },
         )
-        self._sim_task = asyncio.create_task(self._sim_loop())
-        await asyncio.Future()  # run forever
+        self._sim_task = asyncio.create_task(
+            self._sim_loop(), name="sim_loop"
+        )
+        # Watch the sim task so unhandled exceptions don't silently kill us
+        asyncio.create_task(self._watch_task(self._sim_task, "sim_loop"))
+
+        # Block forever until shutdown() is called or a signal arrives
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            logger.info("MuJoCoBridge main future cancelled")
+        finally:
+            self.shutdown()
 
     def shutdown(self) -> None:
+        if getattr(self, "_shutting_down", False):
+            return
+        self._shutting_down = True
+        logger.info("MuJoCoBridge shutting down")
         if self._server:
             self._server.close()
         if self._mjpeg_server:
@@ -213,6 +228,17 @@ class MuJoCoBridge:
         if self._webrtc:
             asyncio.create_task(self._webrtc.close())
         logger.info("MuJoCoBridge shut down")
+
+    async def _watch_task(self, task: asyncio.Task, name: str) -> None:
+        """Log exceptions from background tasks so they don't vanish silently."""
+        try:
+            await task
+        except asyncio.CancelledError:
+            logger.debug("Task %s cancelled", name)
+        except Exception as exc:
+            logger.exception("Task %s crashed: %s", name, exc)
+            # Crash the bridge so the operator knows something is wrong
+            self.shutdown()
 
     # ------------------------------------------------------------------
     # Sim loop
