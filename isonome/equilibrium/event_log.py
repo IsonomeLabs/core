@@ -33,6 +33,7 @@ class TensionEventType(StrEnum):
     FEEDBACK_APPLIED = "feedback_applied"
     DEFAULT_ADJUSTED = "default_adjusted"
     OSCILLATION_DETECTED = "oscillation_detected"
+    COOLDOWN_APPLIED = "cooldown_applied"
     RESET = "reset"
 
 
@@ -381,6 +382,48 @@ class TensionEventLog:
         if not counts:
             return None
         return max(counts, key=counts.get)  # type: ignore[arg-type]
+
+    def cooldown_stats(self) -> dict[str, Any]:
+        """Compute summary statistics for COOLDOWN_APPLIED events.
+
+        Returns:
+            A dict with:
+            - total_cooldown_events: total number of cooldown events
+            - affected_axes: list of axis IDs that have been cooled down
+            - affected_pillars: list of Pillar values that triggered cooldown
+            - avg_multiplier: average cooldown multiplier across all events
+            - per_axis: dict mapping axis_id to count of cooldown events
+        """
+        cooldown_events = self.query(event_type=TensionEventType.COOLDOWN_APPLIED)
+        if not cooldown_events:
+            return {
+                "total_cooldown_events": 0,
+                "affected_axes": [],
+                "affected_pillars": [],
+                "avg_multiplier": 0.0,
+                "per_axis": {},
+            }
+
+        axes: set[TensionID] = set()
+        pillars: set[Pillar] = set()
+        total_multiplier = 0.0
+        per_axis: dict[TensionID, int] = {}
+
+        for event in cooldown_events:
+            axes.add(event.axis_id)
+            pillars.add(event.source_pillar)
+            total_multiplier += event.delta
+            per_axis[event.axis_id] = per_axis.get(event.axis_id, 0) + 1
+
+        avg = total_multiplier / len(cooldown_events)
+
+        return {
+            "total_cooldown_events": len(cooldown_events),
+            "affected_axes": sorted(axes),
+            "affected_pillars": sorted(pillars, key=lambda p: p.value),
+            "avg_multiplier": avg,
+            "per_axis": per_axis,
+        }
 
     # ── Lifecycle ────────────────────────────────────────────────
 

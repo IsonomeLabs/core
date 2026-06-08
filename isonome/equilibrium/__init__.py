@@ -1068,6 +1068,19 @@ class EquilibriumEngine:
                 feedback.tension_axis_id, feedback.source, self._feedback_count
             )
             effective_delta *= cooldown_mult
+            # Record cooldown event in the tension event log if cooldown was applied
+            if self._event_log is not None and cooldown_mult < 1.0:
+                self._tick += 1
+                self._event_log.record(
+                    event_type=TensionEventType.COOLDOWN_APPLIED,
+                    axis_id=feedback.tension_axis_id,
+                    source_pillar=feedback.source,
+                    position_before=axis.position,
+                    position_after=axis.position,  # Cooldown doesn't change position
+                    delta=cooldown_mult,
+                    confidence=feedback.confidence,
+                    tick=self._tick,
+                )
 
         # Apply adaptive damping if controller is enabled
         if self._adaptive_damping is not None:
@@ -1137,11 +1150,25 @@ class EquilibriumEngine:
                 continue
             effective_delta = fb.signal * fb.confidence
             # Apply feedback cooldown damping if enabled
+            cooldown_mult = 1.0
             if self._feedback_cooldown is not None:
                 cooldown_mult = self._feedback_cooldown.check_and_apply(
                     fb.tension_axis_id, fb.source, self._feedback_count
                 )
                 effective_delta *= cooldown_mult
+                # Record cooldown event if cooldown was applied
+                if self._event_log is not None and cooldown_mult < 1.0:
+                    self._tick += 1
+                    self._event_log.record(
+                        event_type=TensionEventType.COOLDOWN_APPLIED,
+                        axis_id=fb.tension_axis_id,
+                        source_pillar=fb.source,
+                        position_before=axis.position,
+                        position_after=axis.position,
+                        delta=cooldown_mult,
+                        confidence=fb.confidence,
+                        tick=self._tick,
+                    )
             # Apply adaptive damping if available
             if self._adaptive_damping is not None:
                 adaptive_d = self._adaptive_damping.effective_damping(
