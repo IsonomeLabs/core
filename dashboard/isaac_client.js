@@ -8,7 +8,7 @@
 const WS_URL = "ws://localhost:8765";
 const SNAPSHOT_URL = "/api/sim/snapshot";
 const STATE_POLL_MS = 100;
-const SNAPSHOT_MS = 100;
+const SNAPSHOT_MS = 200;
 
 const els = {
   uploadInput: document.getElementById("upload-input"),

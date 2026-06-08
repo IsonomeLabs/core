@@ -28,7 +28,7 @@ import time
 import zipfile
 from email.parser import BytesParser
 from email.policy import default
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
@@ -713,7 +713,7 @@ def main():
     t.start()
     print("Live ticker running in background")
 
-    server = HTTPServer(("0.0.0.0", args.port), DashboardHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", args.port), DashboardHandler)
     print(f"Dashboard running at http://localhost:{args.port}")
     try:
         server.serve_forever()
