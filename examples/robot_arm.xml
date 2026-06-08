@@ -3,17 +3,17 @@
   <option timestep="0.002" gravity="0 0 -9.81" integrator="RK4"/>
 
   <asset>
-    <texture type="skybox" builtin="gradient" rgb1="0.05 0.05 0.07" rgb2="0.1 0.1 0.15" width="512" height="512"/>
-    <texture name="grid" type="2d" builtin="checker" rgb1="0.15 0.15 0.18" rgb2="0.2 0.2 0.24" width="512" height="512"/>
+    <texture type="skybox" builtin="gradient" rgb1="0.15 0.15 0.2" rgb2="0.25 0.25 0.35" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.25 0.25 0.3" rgb2="0.3 0.3 0.35" width="512" height="512"/>
     <material name="grid_mat" texture="grid" texrepeat="8 8" reflectance="0.1"/>
-    <material name="base_mat" rgba="0.5 0.5 0.55 1"/>
-    <material name="link_mat" rgba="0.0 0.75 0.8 1"/>
-    <material name="end_mat" rgba="0.85 0.25 0.25 1"/>
+    <material name="base_mat" rgba="0.6 0.6 0.65 1"/>
+    <material name="link_mat" rgba="0.1 0.85 0.9 1"/>
+    <material name="end_mat" rgba="0.95 0.35 0.35 1"/>
   </asset>
 
   <worldbody>
-    <light directional="true" diffuse="0.6 0.6 0.6" specular="0.2 0.2 0.2" pos="2 2 4" dir="-0.4 -0.4 -0.8"/>
-    <light directional="true" diffuse="0.3 0.3 0.35" specular="0.1 0.1 0.1" pos="-2 -2 3" dir="0.3 0.3 -0.7"/>
+    <light directional="true" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3" pos="2 2 5" dir="-0.3 -0.3 -0.8"/>
+    <light directional="true" diffuse="0.5 0.5 0.55" specular="0.15 0.15 0.15" pos="-2 -2 4" dir="0.25 0.25 -0.8"/>
 
     <geom name="floor" type="plane" size="10 10 0.1" material="grid_mat" pos="0 0 -0.01"/>
 
@@ -22,31 +22,31 @@
 
       <body name="l1" pos="0 0 0.15">
         <joint name="j1" type="hinge" axis="0 0 1" range="-3.14 3.14" damping="0.3" armature="0.01"/>
-        <geom name="l1_geom" type="capsule" size="0.035" fromto="0 0 0 0 0 0.3" material="link_mat"/>
+        <geom name="l1_geom" type="capsule" size="0.05" fromto="0 0 0 0 0 0.3" material="link_mat"/>
 
         <body name="l2" pos="0 0 0.3">
           <joint name="j2" type="hinge" axis="0 1 0" range="-2.0 2.0" damping="0.3" armature="0.01"/>
-          <geom name="l2_geom" type="capsule" size="0.032" fromto="0 0 0 0 0 0.3" material="link_mat"/>
+          <geom name="l2_geom" type="capsule" size="0.045" fromto="0 0 0 0 0 0.3" material="link_mat"/>
 
           <body name="l3" pos="0 0 0.3">
             <joint name="j3" type="hinge" axis="0 1 0" range="-2.0 2.0" damping="0.3" armature="0.01"/>
-            <geom name="l3_geom" type="capsule" size="0.028" fromto="0 0 0 0 0 0.24" material="link_mat"/>
+            <geom name="l3_geom" type="capsule" size="0.04" fromto="0 0 0 0 0 0.24" material="link_mat"/>
 
             <body name="l4" pos="0 0 0.24">
               <joint name="j4" type="hinge" axis="1 0 0" range="-1.5 1.5" damping="0.3" armature="0.01"/>
-              <geom name="l4_geom" type="capsule" size="0.025" fromto="0 0 0 0 0 0.2" material="link_mat"/>
+              <geom name="l4_geom" type="capsule" size="0.035" fromto="0 0 0 0 0 0.2" material="link_mat"/>
 
               <body name="l5" pos="0 0 0.2">
                 <joint name="j5" type="hinge" axis="0 1 0" range="-1.5 1.5" damping="0.3" armature="0.01"/>
-                <geom name="l5_geom" type="capsule" size="0.022" fromto="0 0 0 0 0 0.16" material="link_mat"/>
+                <geom name="l5_geom" type="capsule" size="0.03" fromto="0 0 0 0 0 0.16" material="link_mat"/>
 
                 <body name="l6" pos="0 0 0.16">
                   <joint name="j6" type="hinge" axis="1 0 0" range="-1.5 1.5" damping="0.3" armature="0.01"/>
-                  <geom name="l6_geom" type="capsule" size="0.02" fromto="0 0 0 0 0 0.12" material="link_mat"/>
+                  <geom name="l6_geom" type="capsule" size="0.025" fromto="0 0 0 0 0 0.12" material="link_mat"/>
 
                   <body name="l7" pos="0 0 0.12">
                     <joint name="j7" type="hinge" axis="0 1 0" range="-1.5 1.5" damping="0.3" armature="0.01"/>
-                    <geom name="l7_geom" type="capsule" size="0.018" fromto="0 0 0 0 0 0.08" material="end_mat"/>
+                    <geom name="l7_geom" type="capsule" size="0.022" fromto="0 0 0 0 0 0.08" material="end_mat"/>
                     <site name="ee" pos="0 0 0.08" size="0.02"/>
                   </body>
                 </body>

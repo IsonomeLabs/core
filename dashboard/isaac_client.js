@@ -6,7 +6,7 @@
  */
 
 const WS_URL = "ws://localhost:8765";
-const MJPEG_URL = "http://localhost:8766";
+const MJPEG_URL = "/api/sim/stream";  // proxy through dashboard server
 const STATE_POLL_MS = 100;
 
 const els = {
@@ -358,8 +358,9 @@ function startMjpegStream() {
     els.streamVideo.srcObject = null;
   }
   if (els.streamImg) {
+    // Make visible first, then set src (some browsers skip load on hidden img)
     els.streamImg.style.display = "block";
-    els.streamImg.src = MJPEG_URL;
+    els.streamImg.src = MJPEG_URL + "?t=" + Date.now();
   }
   els.streamPlaceholder.style.display = "none";
   mjpegActive = true;

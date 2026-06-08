@@ -119,6 +119,7 @@
     height: 100%;
     object-fit: contain;
     display: none;
+    z-index: 2;
   }
   .viewport-placeholder {
     display: flex;
@@ -326,6 +327,7 @@
     position: absolute;
     inset: 0;
     pointer-events: none;
+    z-index: 1;
     background-image:
       linear-gradient(to right, var(--grid) 1px, transparent 1px),
       linear-gradient(to bottom, var(--grid) 1px, transparent 1px);
@@ -363,7 +365,7 @@
           <div class="stat-row"><span>DC</span> <span class="stat-val" id="stat-dc">—</span></div>
         </div>
         <video id="stream-video" autoplay playsinline muted></video>
-        <img id="stream-img" alt="SIM STREAM">
+        <img id="stream-img" alt="SIM STREAM" crossorigin="anonymous">
         <div id="stream-placeholder" class="viewport-placeholder">
           <div class="box">NO SIGNAL</div>
           <span id="stream-status">Waiting for bridge</span>

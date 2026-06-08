@@ -304,7 +304,7 @@ class MuJoCoBridge:
         self._camera = mujoco.MjvCamera()
         self._camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING
         self._camera.trackbodyid = self._model.nbody - 1
-        self._camera.distance = 1.8
+        self._camera.distance = 2.5
         self._camera.azimuth = 135
         self._camera.elevation = -20
 
