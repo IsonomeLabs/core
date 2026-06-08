@@ -1,7 +1,7 @@
 /**
  * ISONOME SIM CLIENT
  *
- * Connects to Isaac Sim or mock bridge via WebSocket.
+ * Connects to Isaac Sim or mock bridge via WebRTC (preferred) or WebSocket+MJPEG (fallback).
  * No animations. No gradients. Real data only.
  */
 
@@ -13,8 +13,15 @@ const els = {
   uploadInput: document.getElementById("upload-input"),
   uploadBtn: document.getElementById("upload-btn"),
   uploadStatus: document.getElementById("upload-status"),
+  streamVideo: document.getElementById("stream-video"),
   streamImg: document.getElementById("stream-img"),
   streamPlaceholder: document.getElementById("stream-placeholder"),
+  streamStatus: document.getElementById("stream-status"),
+  statsOverlay: document.getElementById("stats-overlay"),
+  statRes: document.getElementById("stat-res"),
+  statFps: document.getElementById("stat-fps"),
+  statDc: document.getElementById("stat-dc"),
+  protoStatus: document.getElementById("proto-status"),
   btnPlay: document.getElementById("btn-play"),
   btnPause: document.getElementById("btn-pause"),
   btnStep: document.getElementById("btn-step"),
@@ -33,23 +40,177 @@ let joints = [];
 let simState = { playing: false, timestamp: 0 };
 let connected = false;
 let mjpegActive = false;
+let protocol = "—";        // 'webrtc' | 'mjpeg' | 'ws' | '—'
+let webrtcConnecting = false;
+
+// ── WebRTC ───────────────────────────────────────────────────────
+let pc = null;
+let dc = null;
+let webrtcActive = false;
+let statsTimer = null;
+
+function setStreamStatus(text) {
+  if (els.streamStatus) els.streamStatus.textContent = text;
+}
+
+function updateProtocolStatus() {
+  let label = "PROTO: " + protocol.toUpperCase();
+  let cls = "indicator";
+  if (protocol === "webrtc") cls += " ok";
+  else if (protocol === "mjpeg") cls += " warn";
+  else if (protocol === "—") cls += " err";
+  if (webrtcConnecting) cls += " pulse";
+  els.protoStatus.textContent = label;
+  els.protoStatus.className = cls;
+}
+
+async function startWebRTC() {
+  if (!window.RTCPeerConnection) {
+    setStreamStatus("WebRTC not supported — falling back");
+    startMjpegStream();
+    return;
+  }
+
+  webrtcConnecting = true;
+  updateProtocolStatus();
+  setStreamStatus("Negotiating WebRTC…");
+
+  pc = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  });
+
+  pc.ontrack = (event) => {
+    const stream = event.streams[0];
+    if (els.streamVideo) {
+      els.streamVideo.srcObject = stream;
+      els.streamVideo.style.display = "block";
+    }
+    if (els.streamImg) {
+      els.streamImg.style.display = "none";
+    }
+    els.streamPlaceholder.style.display = "none";
+    webrtcActive = true;
+    webrtcConnecting = false;
+    protocol = "webrtc";
+    mjpegActive = false;
+    updateProtocolStatus();
+    setStreamStatus("");
+    startStatsPolling();
+  };
+
+  pc.onconnectionstatechange = () => {
+    const state = pc.connectionState;
+    if (state === "connecting") {
+      setStreamStatus("WebRTC connecting…");
+    }
+    if (state === "failed" || state === "closed") {
+      webrtcActive = false;
+      webrtcConnecting = false;
+      stopStatsPolling();
+      if (els.statsOverlay) els.statsOverlay.classList.remove("visible");
+      if (dc) { dc.close(); dc = null; }
+      protocol = "mjpeg";
+      updateProtocolStatus();
+      setStreamStatus("WebRTC failed — falling back to MJPEG");
+      startMjpegStream();
+    }
+  };
+
+  // Data channel for low-latency commands
+  dc = pc.createDataChannel("commands", { ordered: true });
+  dc.onopen = () => {
+    connected = true;
+    webrtcActive = true;
+    updateConnectionStatus(true);
+    updateProtocolStatus();
+  };
+  dc.onclose = () => {
+    webrtcActive = false;
+  };
+  dc.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      handleMessage(msg);
+    } catch (e) {
+      console.warn("Invalid DC message");
+    }
+  };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  // Allow ICE candidates to gather briefly
+  await new Promise((r) => setTimeout(r, 400));
+
+  // Send offer via WebSocket (signaling)
+  sendCommand({
+    action: "webrtc_offer",
+    sdp: pc.localDescription.sdp,
+    type: pc.localDescription.type,
+  });
+}
+
+// ── Stats polling ────────────────────────────────────────────────
+function startStatsPolling() {
+  if (statsTimer) return;
+  statsTimer = setInterval(async () => {
+    if (!pc || !webrtcActive) return;
+    try {
+      const stats = await pc.getStats();
+      let fps = "—", w = 0, h = 0;
+      let dcState = dc ? dc.readyState : "—";
+      stats.forEach((report) => {
+        if (report.type === "inbound-rtp" && report.kind === "video") {
+          if (report.framesPerSecond != null) fps = report.framesPerSecond.toFixed(0);
+        }
+        if (report.type === "track" && report.kind === "video") {
+          if (report.frameWidth) w = report.frameWidth;
+          if (report.frameHeight) h = report.frameHeight;
+        }
+      });
+      if (els.statRes) els.statRes.textContent = w && h ? `${w}×${h}` : "—";
+      if (els.statFps) els.statFps.textContent = fps !== "—" ? fps + " FPS" : "—";
+      if (els.statDc) els.statDc.textContent = dcState.toUpperCase();
+      if (els.statsOverlay) els.statsOverlay.classList.add("visible");
+    } catch (e) {
+      // ignore
+    }
+  }, 1000);
+}
+
+function stopStatsPolling() {
+  if (statsTimer) {
+    clearInterval(statsTimer);
+    statsTimer = null;
+  }
+}
 
 // ── WebSocket ────────────────────────────────────────────────────
 function connectWebSocket() {
   if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
     return;
   }
+  setStreamStatus("Connecting to bridge…");
   try {
     ws = new WebSocket(WS_URL);
     ws.onopen = () => {
       connected = true;
+      protocol = "ws";
       updateConnectionStatus(true);
+      updateProtocolStatus();
       startStatePolling();
+      startWebRTC();
     };
     ws.onclose = () => {
       connected = false;
+      webrtcActive = false;
+      webrtcConnecting = false;
+      protocol = "—";
       updateConnectionStatus(false);
+      updateProtocolStatus();
       stopStatePolling();
+      stopStatsPolling();
+      setStreamStatus("Disconnected — retrying…");
       setTimeout(connectWebSocket, 2000);
     };
     ws.onerror = () => {};
@@ -62,21 +223,49 @@ function connectWebSocket() {
       }
     };
   } catch (e) {
+    setStreamStatus("Connection failed — retrying…");
     setTimeout(connectWebSocket, 2000);
   }
 }
 
 function sendCommand(cmd) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (webrtcActive && dc && dc.readyState === "open") {
+    dc.send(JSON.stringify(cmd));
+  } else if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(cmd));
   }
 }
 
 function handleMessage(msg) {
   if (msg.error) {
+    // If WebRTC offer was rejected, fall back gracefully
+    if (msg.error.includes("WebRTC not available")) {
+      webrtcConnecting = false;
+      protocol = "mjpeg";
+      updateProtocolStatus();
+      setStreamStatus("WebRTC unavailable — using MJPEG");
+      startMjpegStream();
+      return;
+    }
     els.uploadStatus.textContent = "ERR: " + msg.error;
     return;
   }
+
+  // WebRTC signaling answer
+  if (msg.ok && msg.webrtc_answer) {
+    const ans = msg.webrtc_answer;
+    pc.setRemoteDescription(new RTCSessionDescription(ans)).catch((err) => {
+      console.warn("Failed to set remote desc:", err);
+      webrtcActive = false;
+      webrtcConnecting = false;
+      protocol = "mjpeg";
+      updateProtocolStatus();
+      setStreamStatus("WebRTC handshake failed — falling back");
+      startMjpegStream();
+    });
+    return;
+  }
+
   if (msg.ok && msg.state) {
     updateState(msg.state);
   }
@@ -161,19 +350,32 @@ function updateJointValues(jointsData) {
   });
 }
 
-// ── MJPEG Stream ─────────────────────────────────────────────────
+// ── MJPEG Stream (fallback) ──────────────────────────────────────
 function startMjpegStream() {
-  if (mjpegActive) return;
+  if (mjpegActive || webrtcActive) return;
+  if (els.streamVideo) {
+    els.streamVideo.style.display = "none";
+    els.streamVideo.srcObject = null;
+  }
+  if (els.streamImg) {
+    els.streamImg.style.display = "block";
+    els.streamImg.src = MJPEG_URL;
+  }
   els.streamPlaceholder.style.display = "none";
-  els.streamImg.style.display = "block";
-  els.streamImg.src = MJPEG_URL;
   mjpegActive = true;
+  protocol = "mjpeg";
+  updateProtocolStatus();
+  setStreamStatus("");
 }
 
 function stopMjpegStream() {
-  els.streamImg.src = "";
-  els.streamImg.style.display = "none";
-  els.streamPlaceholder.style.display = "flex";
+  if (els.streamImg) {
+    els.streamImg.src = "";
+    els.streamImg.style.display = "none";
+  }
+  if (!webrtcActive) {
+    els.streamPlaceholder.style.display = "flex";
+  }
   mjpegActive = false;
 }
 
@@ -185,7 +387,7 @@ async function uploadFile() {
     return;
   }
 
-  els.uploadStatus.textContent = "UPLOADING...";
+  els.uploadStatus.textContent = "UPLOADING…";
   const form = new FormData();
   form.append("file", file);
 
@@ -196,20 +398,50 @@ async function uploadFile() {
       els.uploadStatus.textContent = "ERR: " + data.error;
       return;
     }
+    els.uploadStatus.textContent = "PARSING MODEL…";
     sendCommand({ action: "load_urdf", path: data.path });
-    setTimeout(startMjpegStream, 500);
+
+    // Smooth transition: show loading, then activate stream
+    setStreamStatus("Loading simulation…");
+    setTimeout(() => {
+      if (!webrtcActive && !mjpegActive) {
+        startMjpegStream();
+      }
+      setStreamStatus("");
+    }, 600);
   } catch (e) {
     els.uploadStatus.textContent = "ERR: " + e.message;
   }
 }
 
 // ── Controls ─────────────────────────────────────────────────────
+function flashButton(btn) {
+  if (!btn) return;
+  btn.classList.add("flash");
+  setTimeout(() => btn.classList.remove("flash"), 120);
+}
+
 function setupControls() {
-  els.btnPlay.addEventListener("click", () => sendCommand({ action: "play" }));
-  els.btnPause.addEventListener("click", () => sendCommand({ action: "pause" }));
-  els.btnStep.addEventListener("click", () => sendCommand({ action: "step", steps: 1 }));
-  els.btnReset.addEventListener("click", () => sendCommand({ action: "reset" }));
-  els.uploadBtn.addEventListener("click", uploadFile);
+  els.btnPlay.addEventListener("click", () => {
+    flashButton(els.btnPlay);
+    sendCommand({ action: "play" });
+  });
+  els.btnPause.addEventListener("click", () => {
+    flashButton(els.btnPause);
+    sendCommand({ action: "pause" });
+  });
+  els.btnStep.addEventListener("click", () => {
+    flashButton(els.btnStep);
+    sendCommand({ action: "step", steps: 1 });
+  });
+  els.btnReset.addEventListener("click", () => {
+    flashButton(els.btnReset);
+    sendCommand({ action: "reset" });
+  });
+  els.uploadBtn.addEventListener("click", () => {
+    flashButton(els.uploadBtn);
+    uploadFile();
+  });
   els.uploadInput.addEventListener("change", () => {
     const f = els.uploadInput.files[0];
     if (f) els.uploadStatus.textContent = "READY: " + f.name;
@@ -225,7 +457,6 @@ function updateConnectionStatus(isConnected) {
 function init() {
   setupControls();
   connectWebSocket();
-  startMjpegStream();
 }
 
 init();

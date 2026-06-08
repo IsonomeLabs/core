@@ -82,6 +82,13 @@
   .indicator.ok::before { background: var(--accent-green); }
   .indicator.warn::before { background: var(--accent-amber); }
   .indicator.err::before { background: var(--accent-red); }
+  .indicator.pulse::before {
+    animation: pulse-dot 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
 
   /* ── Main Grid ───────────────────────────────────────── */
   .main {
@@ -103,6 +110,7 @@
     justify-content: center;
     position: relative;
   }
+  .viewport video,
   .viewport img {
     width: 100%;
     height: 100%;
@@ -113,7 +121,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     color: var(--text-dim);
     font-size: 11px;
     letter-spacing: 0.05em;
@@ -128,6 +136,38 @@
     justify-content: center;
     color: var(--text-dim);
     font-size: 10px;
+  }
+  .viewport-placeholder .status-line {
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    min-height: 14px;
+  }
+
+  /* Stats overlay */
+  .stats-overlay {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(10, 10, 10, 0.85);
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    display: none;
+    pointer-events: none;
+    z-index: 10;
+  }
+  .stats-overlay.visible { display: block; }
+  .stats-overlay .stat-row {
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+  }
+  .stats-overlay .stat-val {
+    color: var(--accent-cyan);
   }
 
   /* ── Toolbar ─────────────────────────────────────────── */
@@ -159,12 +199,18 @@
     padding: 4px 12px;
     cursor: pointer;
     white-space: nowrap;
+    transition: background 0.05s, border-color 0.05s;
   }
   .btn:hover { background: #222; border-color: var(--border-bright); }
   .btn:active { background: #1a1a1a; }
   .btn:disabled { color: var(--text-dim); cursor: not-allowed; }
   .btn.primary { border-color: var(--accent-cyan); color: var(--accent-cyan); }
   .btn.danger { border-color: var(--accent-red); color: var(--accent-red); }
+  .btn.flash {
+    background: var(--accent-cyan);
+    color: var(--bg);
+    border-color: var(--accent-cyan);
+  }
 
   input[type="file"] { display: none; }
 
@@ -296,6 +342,7 @@
       <span class="system">ISONOME / SIM_SCAFFOLD</span>
     </div>
     <div class="titlebar-right">
+      <span class="indicator" id="proto-status">PROTO: —</span>
       <span class="indicator" id="conn-status">BRIDGE OFFLINE</span>
       <span class="indicator" id="sim-status">SIM STOPPED</span>
     </div>
@@ -308,10 +355,15 @@
     <div class="viewport-col">
       <div class="viewport">
         <div class="grid-overlay"></div>
+        <div class="stats-overlay" id="stats-overlay">
+          <div class="stat-row"><span id="stat-res">—</span> <span class="stat-val" id="stat-fps">—</span></div>
+          <div class="stat-row"><span>DC</span> <span class="stat-val" id="stat-dc">—</span></div>
+        </div>
+        <video id="stream-video" autoplay playsinline muted></video>
         <img id="stream-img" alt="SIM STREAM">
         <div id="stream-placeholder" class="viewport-placeholder">
           <div class="box">NO SIGNAL</div>
-          <span>Upload URDF to initialize simulation</span>
+          <span id="stream-status">Waiting for bridge</span>
         </div>
       </div>
 
