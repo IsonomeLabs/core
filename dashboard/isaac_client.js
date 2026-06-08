@@ -6,8 +6,9 @@
  */
 
 const WS_URL = "ws://localhost:8765";
-const MJPEG_URL = "/api/sim/stream";  // proxy through dashboard server
+const SNAPSHOT_URL = "/api/sim/snapshot";
 const STATE_POLL_MS = 100;
+const SNAPSHOT_MS = 100;
 
 const els = {
   uploadInput: document.getElementById("upload-input"),
@@ -40,6 +41,8 @@ let joints = [];
 let simState = { playing: false, timestamp: 0 };
 let connected = false;
 let mjpegActive = false;
+let snapshotTimer = null;
+let lastObjectUrl = null;
 let protocol = "—";        // 'webrtc' | 'mjpeg' | 'ws' | '—'
 let webrtcConnecting = false;
 
@@ -67,7 +70,7 @@ function updateProtocolStatus() {
 async function startWebRTC() {
   if (!window.RTCPeerConnection) {
     setStreamStatus("WebRTC not supported — falling back");
-    startMjpegStream();
+    startSnapshotPolling();
     return;
   }
 
@@ -112,7 +115,7 @@ async function startWebRTC() {
       protocol = "mjpeg";
       updateProtocolStatus();
       setStreamStatus("WebRTC failed — falling back to MJPEG");
-      startMjpegStream();
+      startSnapshotPolling();
     }
   };
 
@@ -244,7 +247,7 @@ function handleMessage(msg) {
       protocol = "mjpeg";
       updateProtocolStatus();
       setStreamStatus("WebRTC unavailable — using MJPEG");
-      startMjpegStream();
+      startSnapshotPolling();
       return;
     }
     els.uploadStatus.textContent = "ERR: " + msg.error;
@@ -261,7 +264,7 @@ function handleMessage(msg) {
       protocol = "mjpeg";
       updateProtocolStatus();
       setStreamStatus("WebRTC handshake failed — falling back");
-      startMjpegStream();
+      startSnapshotPolling();
     });
     return;
   }
@@ -350,26 +353,45 @@ function updateJointValues(jointsData) {
   });
 }
 
-// ── MJPEG Stream (fallback) ──────────────────────────────────────
-function startMjpegStream() {
+// ── Snapshot polling (fallback) ──────────────────────────────────
+function startSnapshotPolling() {
   if (mjpegActive || webrtcActive) return;
   if (els.streamVideo) {
     els.streamVideo.style.display = "none";
     els.streamVideo.srcObject = null;
   }
   if (els.streamImg) {
-    // Make visible first, then set src (some browsers skip load on hidden img)
     els.streamImg.style.display = "block";
-    els.streamImg.src = MJPEG_URL + "?t=" + Date.now();
   }
   els.streamPlaceholder.style.display = "none";
   mjpegActive = true;
   protocol = "mjpeg";
   updateProtocolStatus();
   setStreamStatus("");
+
+  snapshotTimer = setInterval(async () => {
+    try {
+      const resp = await fetch(SNAPSHOT_URL + "?t=" + Date.now());
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      if (lastObjectUrl) URL.revokeObjectURL(lastObjectUrl);
+      lastObjectUrl = URL.createObjectURL(blob);
+      if (els.streamImg) els.streamImg.src = lastObjectUrl;
+    } catch (e) {
+      // ignore
+    }
+  }, SNAPSHOT_MS);
 }
 
-function stopMjpegStream() {
+function stopSnapshotPolling() {
+  if (snapshotTimer) {
+    clearInterval(snapshotTimer);
+    snapshotTimer = null;
+  }
+  if (lastObjectUrl) {
+    URL.revokeObjectURL(lastObjectUrl);
+    lastObjectUrl = null;
+  }
   if (els.streamImg) {
     els.streamImg.src = "";
     els.streamImg.style.display = "none";
@@ -406,7 +428,7 @@ async function uploadFile() {
     setStreamStatus("Loading simulation…");
     setTimeout(() => {
       if (!webrtcActive && !mjpegActive) {
-        startMjpegStream();
+        startSnapshotPolling();
       }
       setStreamStatus("");
     }, 600);

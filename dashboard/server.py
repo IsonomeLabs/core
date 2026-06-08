@@ -457,6 +457,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             super().do_GET()
         elif self.path == "/api/sim/stream":
             self._proxy_mjpeg()
+        elif self.path.startswith("/api/sim/snapshot"):
+            self._snapshot_mjpeg()
         elif self.path == "/" or self.path == "/index.html":
             self.path = "/index.html"
             super().do_GET()
@@ -609,6 +611,62 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": f"Sim bridge unavailable: {exc}"}).encode())
         except Exception as exc:
             self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(exc)}).encode())
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    def _snapshot_mjpeg(self) -> None:
+        """Read one frame from the MJPEG stream and return it as a single JPEG."""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(3.0)
+            sock.connect((MJPEG_PROXY_HOST, MJPEG_PROXY_PORT))
+
+            request = (
+                f"GET / HTTP/1.1\r\n"
+                f"Host: {MJPEG_PROXY_HOST}:{MJPEG_PROXY_PORT}\r\n"
+                f"Connection: close\r\n\r\n"
+            )
+            sock.sendall(request.encode())
+
+            # Read until we find the first JPEG frame
+            data = b""
+            jpeg = None
+            while jpeg is None:
+                chunk = sock.recv(8192)
+                if not chunk:
+                    break
+                data += chunk
+                # Look for JPEG magic start and end markers
+                soi = data.find(b"\xff\xd8\xff")
+                if soi != -1:
+                    eoi = data.find(b"\xff\xd9", soi + 3)
+                    if eoi != -1:
+                        jpeg = data[soi : eoi + 2]
+
+            if jpeg is None:
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "No frame available"}).encode())
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(jpeg)))
+            self.send_header("Cache-Control", "no-cache, no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(jpeg)
+        except Exception as exc:
+            self.send_response(503)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
