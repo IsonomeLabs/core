@@ -1,6 +1,6 @@
 """Isonome simulation backends.
 
-Provides bridges to Isaac Sim (primary) and mock fallbacks for development.
+Provides bridges to Isaac Sim (primary), MuJoCo, and mock fallbacks for development.
 """
 from __future__ import annotations
 
@@ -9,6 +9,30 @@ __all__ = []
 try:
     from .isaac_bridge import IsaacSimBridge
     __all__.append("IsaacSimBridge")
+except Exception:
+    pass
+
+try:
+    from .mujoco_bridge import MuJoCoBridge
+    __all__.append("MuJoCoBridge")
+except Exception:
+    pass
+
+try:
+    from .vla_controller import VLAController
+    __all__.append("VLAController")
+except Exception:
+    pass
+
+try:
+    from .vla_inspector import VLAInspector
+    __all__.append("VLAInspector")
+except Exception:
+    pass
+
+try:
+    from .llm_steering import LLMSteering, MockLLMSteering
+    __all__.extend(["LLMSteering", "MockLLMSteering"])
 except Exception:
     pass
 
