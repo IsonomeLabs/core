@@ -170,6 +170,10 @@ class MuJoCoBridge:
         self._mjpeg_server: asyncio.AbstractServer | None = None
         self._start_time: float = 0.0
         self._webrtc: WebRTCManager | None = None
+        self._current_intent: str = ""
+        self._action_queue: list[np.ndarray] = []
+        self._action_lpf_alpha: float = 0.3  # low-pass filter coefficient
+        self._last_action: np.ndarray | None = None
 
         if HAS_AIORRTC:
             self._webrtc = WebRTCManager(
@@ -265,6 +269,15 @@ class MuJoCoBridge:
             return {"ok": True, "state": self._get_state_dict()}
         if action == "set_joints":
             return self._cmd_set_joints(cmd.get("positions", {}))
+        if action == "set_intent":
+            self._current_intent = cmd.get("text", "")
+            return {"ok": True, "intent": self._current_intent}
+        if action == "get_intent":
+            return {"ok": True, "intent": self._current_intent}
+        if action == "get_observation":
+            return {"ok": True, "observation": self.get_observation(self._current_intent)}
+        if action == "apply_action":
+            return self._cmd_apply_action(cmd.get("action", []))
         if action == "webrtc_offer":
             if not self._webrtc:
                 return {"error": "WebRTC not available (aiortc missing)"}
@@ -345,6 +358,89 @@ class MuJoCoBridge:
             # Free and ball joints are skipped for simple set
         return {"ok": True}
 
+    def get_observation(self, intent: str = "", cameras: str = "tracking") -> dict[str, Any]:
+        """Package current sim state into a VLA observation.
+
+        Parameters
+        ----------
+        intent:
+            Task description passed to the VLA.
+        cameras:
+            ``"tracking"`` for the default tracking camera,
+            ``"quad"`` for a 4-view front/right/back/top array.
+
+        Returns
+        -------
+        dict
+            ``{"image": np.ndarray | list[np.ndarray],
+            "proprioception": np.ndarray, "intent": str,
+            "timestamp": float}``
+        """
+        if cameras == "quad":
+            images = self._capture_frame_rgb_quad()
+        else:
+            images = self._capture_frame_rgb()
+        return {
+            "image": images,
+            "proprioception": self._get_proprio(),
+            "intent": intent,
+            "timestamp": time.time(),
+        }
+
+    def _get_proprio(self, normalized: bool = False) -> "np.ndarray":
+        """Return joint positions and velocities.
+
+        Parameters
+        ----------
+        normalized:
+            If ``True``, positions are scaled to ``[0, 1]`` per joint limit.
+            VLA models usually prefer raw values, so default is ``False``.
+
+        Shape: ``[n_joints * 2]`` — position followed by velocity.
+        """
+        if self._data is None or self._model is None:
+            return np.zeros(0, dtype=np.float32)
+        pos_list: list[float] = []
+        vel_list: list[float] = []
+        for name in self._joint_names:
+            idx = self._joint_map[name]
+            qposadr = self._model.jnt_qposadr[idx]
+            qveladr = self._model.jnt_dofadr[idx]
+            raw_pos = float(self._data.qpos[qposadr])
+            if normalized:
+                jnt_range = self._model.jnt_range[idx]
+                lo, hi = float(jnt_range[0]), float(jnt_range[1])
+                span = hi - lo if hi != lo else 1.0
+                raw_pos = (raw_pos - lo) / span
+            pos_list.append(raw_pos)
+            vel_list.append(float(self._data.qvel[qveladr]))
+        return np.array(pos_list + vel_list, dtype=np.float32)
+
+    def _cmd_apply_action(self, action: list[float]) -> dict[str, Any]:
+        """Apply a VLA action (delta positions) with optional smoothing."""
+        if self._data is None or self._model is None:
+            return {"error": "no model loaded"}
+        action_arr = np.asarray(action, dtype=np.float32)
+        # Low-pass filter for smoothness
+        if self._last_action is not None and action_arr.shape == self._last_action.shape:
+            action_arr = (
+                self._action_lpf_alpha * action_arr
+                + (1.0 - self._action_lpf_alpha) * self._last_action
+            )
+        self._last_action = action_arr.copy()
+        # Apply as delta positions
+        for i, name in enumerate(self._joint_names):
+            if i >= len(action_arr):
+                break
+            idx = self._joint_map[name]
+            qposadr = self._model.jnt_qposadr[idx]
+            jnt_type = self._model.jnt_type[idx]
+            if jnt_type == mujoco.mjtJoint.mjJNT_HINGE or jnt_type == mujoco.mjtJoint.mjJNT_SLIDE:
+                self._data.qpos[qposadr] += float(action_arr[i])
+        # Forward kinematics so the next render is consistent
+        mujoco.mj_forward(self._model, self._data)
+        return {"ok": True}
+
     def _get_state_dict(self) -> dict[str, Any]:
         joints = []
         if self._data is not None and self._model is not None:
@@ -385,6 +481,7 @@ class MuJoCoBridge:
             "base_pose": base_pose,
             "playing": self._playing,
             "timestamp": elapsed,
+            "intent": self._current_intent,
         }
 
     # ------------------------------------------------------------------
@@ -407,6 +504,40 @@ class MuJoCoBridge:
         except Exception as exc:
             logger.warning("Frame capture failed", extra={"error": str(exc)})
             return None
+
+    def _capture_frame_rgb_quad(self) -> "list[np.ndarray] | None":
+        """Render four orthographic-style views and return as a list.
+
+        Views: front (az=0), right (az=90), back (az=180), top (az=135, el=-60).
+        All cameras track the last body.
+        """
+        if not HAS_MUJOCO or self._renderer is None or self._data is None:
+            return None
+        views = []
+        configs = [
+            (0, -20, 2.5),      # front
+            (90, -20, 2.5),     # right
+            (180, -20, 2.5),    # back
+            (135, -60, 2.0),    # top
+        ]
+        base_cam = getattr(self, "_camera", None)
+        for az, el, dist in configs:
+            cam = mujoco.MjvCamera()
+            cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+            cam.trackbodyid = self._model.nbody - 1 if self._model else 0
+            cam.distance = dist
+            cam.azimuth = az
+            cam.elevation = el
+            try:
+                self._renderer.update_scene(self._data, camera=cam)
+                views.append(self._renderer.render())
+            except Exception as exc:
+                logger.warning("Quad render failed", extra={"view": (az, el), "error": str(exc)})
+                views.append(np.zeros((480, 640, 3), dtype=np.uint8))
+        # Restore original camera if present
+        if base_cam is not None:
+            self._renderer.update_scene(self._data, camera=base_cam)
+        return views
 
     def _capture_frame_jpeg(self) -> bytes | None:
         """Render the current MuJoCo scene and return JPEG bytes."""
