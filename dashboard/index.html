@@ -653,6 +653,136 @@
 }
 
 /* ── Tension Event Log ───────────────────────────────── */
+/* ── Adaptive Damping ───────────────────────────────── */
+.ad-damp-grid {
+ display: grid;
+ grid-template-columns: 1fr;
+ gap: 4px;
+}
+.ad-damp-row {
+ display: grid;
+ grid-template-columns: 140px 1fr 64px 64px 48px;
+ align-items: center;
+ gap: 8px;
+ padding: 4px 6px;
+ background: var(--surface2);
+}
+.ad-damp-label {
+ font-size: 10px;
+ display: flex;
+ flex-direction: column;
+ gap: 1px;
+}
+.ad-damp-axis-name {
+ font-weight: 600;
+ font-size: 10px;
+}
+.ad-damp-bar-container {
+ position: relative;
+ height: 12px;
+ background: #0a0a0a;
+ border: 1px solid var(--border);
+}
+.ad-damp-bar-base {
+ position: absolute;
+ top: 0;
+ width: 1px;
+ height: 100%;
+ background: var(--text-dim);
+ z-index: 2;
+ opacity: 0.5;
+}
+.ad-damp-bar-fill {
+ position: absolute;
+ top: 1px;
+ bottom: 1px;
+ background: var(--accent-amber);
+ opacity: 0.6;
+}
+.ad-damp-bar-fill.damp-boosted {
+ background: var(--accent-red);
+ opacity: 0.7;
+}
+.ad-damp-bar-fill.damp-stable {
+ background: var(--accent-green);
+ opacity: 0.5;
+}
+.ad-damp-value {
+ font-family: inherit;
+ font-size: 10px;
+ text-align: right;
+ font-weight: 500;
+}
+.ad-damp-delta {
+ font-family: inherit;
+ font-size: 10px;
+ text-align: right;
+ font-weight: 600;
+}
+.ad-damp-delta-positive { color: var(--accent-red); }
+.ad-damp-delta-negative { color: var(--accent-green); }
+.ad-damp-delta-neutral { color: var(--text-dim); }
+.ad-severity-indicator {
+ font-family: inherit;
+ font-size: 9px;
+ text-align: center;
+ font-weight: 700;
+ width: 36px;
+ height: 16px;
+ line-height: 16px;
+ border: 1px solid var(--border);
+ display: inline-block;
+}
+.ad-severity-low { color: var(--accent-green); border-color: var(--accent-green); }
+.ad-severity-medium { color: var(--accent-amber); border-color: var(--accent-amber); }
+.ad-severity-high { color: var(--accent-red); border-color: var(--accent-red); }
+.ad-damp-summary-row {
+ display: flex;
+ gap: 20px;
+ margin-top: 8px;
+ justify-content: center;
+ flex-wrap: wrap;
+}
+.ad-damp-summary-item {
+ display: flex;
+ flex-direction: column;
+ align-items: center;
+ gap: 2px;
+}
+.ad-damp-summary-num {
+ font-family: inherit;
+ font-size: 16px;
+ font-weight: 700;
+ color: var(--text-bright);
+}
+.ad-damp-summary-label {
+ font-size: 8px;
+ color: var(--text-dim);
+ text-transform: uppercase;
+ letter-spacing: 0.08em;
+}
+.ad-damp-config {
+ display: flex;
+ gap: 16px;
+ margin-top: 8px;
+ justify-content: center;
+ font-size: 9px;
+ color: var(--text-dim);
+}
+.ad-damp-config span {
+ display: flex;
+ align-items: center;
+ gap: 4px;
+}
+.ad-damp-config strong {
+ color: var(--text);
+ font-weight: 600;
+}
+.pillar-cognition .ad-damp-axis-name { color: var(--accent-cyan); }
+.pillar-praxis .ad-damp-axis-name { color: var(--accent-amber); }
+.pillar-mneme .ad-damp-axis-name { color: var(--accent-green); }
+
+/* ── Tension Event Log ───────────────────────────────── */
 .eventlog-summary {
     display: flex;
     gap: 24px;
@@ -920,18 +1050,26 @@
 
   <!-- Velocity & Momentum -->
   <div class="panel panel-wide">
-    <div class="panel-title">TENSION VELOCITY & MOMENTUM</div>
-    <div class="velocity-grid" id="velocity-grid"></div>
-    <div class="velocity-summary-row">
-      <div class="velocity-summary-item">
-        <span id="vel-total-reversals" class="velocity-summary-num">0</span>
-        <span class="velocity-summary-label">Reversals</span>
-      </div>
-      <div class="velocity-summary-item">
-        <span id="vel-total-updates" class="velocity-summary-num">0</span>
-        <span class="velocity-summary-label">Updates</span>
-      </div>
-    </div>
+  <div class="panel-title">TENSION VELOCITY & MOMENTUM</div>
+  <div class="velocity-grid" id="velocity-grid"></div>
+  <div class="velocity-summary-row">
+  <div class="velocity-summary-item">
+  <span id="vel-total-reversals" class="velocity-summary-num">0</span>
+  <span class="velocity-summary-label">Reversals</span>
+  </div>
+  <div class="velocity-summary-item">
+  <span id="vel-total-updates" class="velocity-summary-num">0</span>
+  <span class="velocity-summary-label">Updates</span>
+  </div>
+  </div>
+  </div>
+
+  <!-- Adaptive Damping -->
+  <div class="panel panel-wide">
+  <div class="panel-title">ADAPTIVE DAMPING</div>
+  <div id="ad-damp-container">
+  <div style="font-size:10px;color:var(--text-dim);font-style:italic;padding:8px 0;">No adaptive damping data</div>
+  </div>
   </div>
 
   <!-- Attention Budget -->
@@ -1121,15 +1259,16 @@ function setConnected(val) {
 }
 
 function render(state) {
-  renderHeader(state);
-  renderTensions(state);
-  renderStress(state);
-  renderPillars(state);
-  renderVelocity(state);
-  renderEventLog(state);
-  renderAttention(state);
-  renderMneme(state);
-  renderCalibration(state);
+ renderHeader(state);
+ renderTensions(state);
+ renderStress(state);
+ renderPillars(state);
+ renderVelocity(state);
+ renderAdaptiveDamping(state);
+ renderEventLog(state);
+ renderAttention(state);
+ renderMneme(state);
+ renderCalibration(state);
 }
 
 function renderHeader(state) {
@@ -1333,6 +1472,119 @@ function renderVelocity(state) {
     document.getElementById("vel-total-reversals").textContent = vs.total_reversals || 0;
     document.getElementById("vel-total-updates").textContent = vs.total_updates || 0;
   }
+}
+
+function renderAdaptiveDamping(state) {
+ const container = document.getElementById("ad-damp-container");
+ const ad = state.adaptive_damping;
+
+ if (!ad || !ad.enabled) {
+  container.innerHTML = '<div style="font-size:10px;color:var(--text-dim);font-style:italic;padding:8px 0;">Adaptive damping not active</div>';
+  return;
+ }
+
+ const dampMax = ad.damping_max || 1.0;
+ const axisDetail = ad.axis_detail || {};
+ const axisIds = Object.keys(axisDetail);
+
+ // Build header + grid on first render or if axis count changes
+ if (!container.dataset.built || parseInt(container.dataset.axisCount) !== axisIds.length) {
+  let html = '';
+
+  // Summary row
+  html += '<div class="ad-damp-summary-row">';
+  html += '<div class="ad-damp-summary-item"><span class="ad-damp-summary-num">' + (ad.total_adaptations || 0) + '</span><span class="ad-damp-summary-label">Adaptations</span></div>';
+  html += '<div class="ad-damp-summary-item"><span class="ad-damp-summary-num">' + (ad.preemptive_oscillation_count || 0) + '</span><span class="ad-damp-summary-label">Preemptive</span></div>';
+  html += '<div class="ad-damp-summary-item"><span class="ad-damp-summary-num">' + (ad.damping_min || 0).toFixed(2) + '</span><span class="ad-damp-summary-label">Damp Min</span></div>';
+  html += '<div class="ad-damp-summary-item"><span class="ad-damp-summary-num">' + (ad.damping_max || 0).toFixed(2) + '</span><span class="ad-damp-summary-label">Damp Max</span></div>';
+  html += '</div>';
+
+  // Per-axis grid header
+  html += '<div class="ad-damp-grid">';
+  html += '<div class="ad-damp-row" style="background:transparent;font-weight:600;font-size:9px;color:var(--text-dim);">';
+  html += '<div>Axis</div><div>Damping</div><div>Effective</div><div>Delta</div><div>Sev</div>';
+  html += '</div>';
+
+  for (const axisId of axisIds) {
+   const detail = axisDetail[axisId];
+   const pillar = detail.pillar || 'cognition';
+   html += '<div class="ad-damp-row pillar-' + pillar + '" id="ad-row-' + axisId + '">';
+   html += '<div class="ad-damp-label"><span class="ad-damp-axis-name">' + axisId.replace(/_/g, ' ↔ ') + '</span><span style="font-size:8px;color:var(--text-dim)">' + pillar + '</span></div>';
+   html += '<div class="ad-damp-bar-container" id="ad-bar-' + axisId + '"></div>';
+   html += '<div class="ad-damp-value" id="ad-eff-' + axisId + '">—</div>';
+   html += '<div class="ad-damp-delta" id="ad-delta-' + axisId + '">—</div>';
+   html += '<div id="ad-sev-' + axisId + '"></div>';
+   html += '</div>';
+  }
+  html += '</div>';
+
+  // Config row
+  html += '<div class="ad-damp-config">';
+  html += '<span>Boost <strong>' + (ad.boost_rate || 0) + '</strong></span>';
+  html += '<span>Decay <strong>' + (ad.decay_rate || 0) + '</strong></span>';
+  html += '<span>Window <strong>' + (ad.stability_window || 0) + '</strong></span>';
+  html += '<span>Preempt <strong>' + (ad.preemptive_boost_rate || 0) + '</strong></span>';
+  html += '</div>';
+
+  container.innerHTML = html;
+  container.dataset.built = '1';
+  container.dataset.axisCount = axisIds.length;
+ }
+
+ // Update values for each axis
+ for (const axisId of axisIds) {
+  const detail = axisDetail[axisId];
+  const effDamp = detail.effective_damping || 0;
+  const baseDamp = detail.base_damping || 0;
+  const delta = detail.damping_delta || 0;
+  const severity = detail.oscillation_severity || 0;
+
+  // Bar: fill width proportional to effective damping / max
+  const barEl = document.getElementById('ad-bar-' + axisId);
+  if (barEl) {
+   const fillPct = Math.min((effDamp / dampMax) * 100, 100);
+   const basePct = Math.min((baseDamp / dampMax) * 100, 100);
+   let fillClass = 'ad-damp-bar-fill';
+   if (delta > 0.01) fillClass += ' damp-boosted';
+   else if (delta <= 0) fillClass += ' damp-stable';
+   barEl.innerHTML = '<div class="' + fillClass + '" style="left:0;width:' + fillPct.toFixed(1) + '%"></div>' +
+    '<div class="ad-damp-bar-base" style="left:' + basePct.toFixed(1) + '%"></div>';
+  }
+
+  // Effective value
+  const effEl = document.getElementById('ad-eff-' + axisId);
+  if (effEl) effEl.textContent = effDamp.toFixed(3);
+
+  // Delta with color coding
+  const deltaEl = document.getElementById('ad-delta-' + axisId);
+  if (deltaEl) {
+   const sign = delta >= 0 ? '+' : '';
+   deltaEl.textContent = sign + delta.toFixed(3);
+   deltaEl.className = 'ad-damp-delta';
+   if (delta > 0.01) deltaEl.classList.add('ad-damp-delta-positive');
+   else if (delta < -0.001) deltaEl.classList.add('ad-damp-delta-negative');
+   else deltaEl.classList.add('ad-damp-delta-neutral');
+  }
+
+  // Severity indicator
+  const sevEl = document.getElementById('ad-sev-' + axisId);
+  if (sevEl) {
+   let sevClass = 'ad-severity-indicator ad-severity-low';
+   let sevLabel = 'LOW';
+   if (severity > 0.6) { sevClass = 'ad-severity-indicator ad-severity-high'; sevLabel = 'HIGH'; }
+   else if (severity > 0.25) { sevClass = 'ad-severity-indicator ad-severity-medium'; sevLabel = 'MED'; }
+   sevEl.innerHTML = '<span class="' + sevClass + '">' + sevLabel + '</span>';
+  }
+ }
+
+ // Update summary numbers
+ const summaryItems = container.querySelectorAll('.ad-damp-summary-item');
+ if (summaryItems.length >= 4) {
+  summaryItems[0].querySelector('.ad-damp-summary-num').textContent = ad.total_adaptations || 0;
+  summaryItems[1].querySelector('.ad-damp-summary-num').textContent = ad.preemptive_oscillation_count || 0;
+  summaryItems[2].querySelector('.ad-damp-summary-num').textContent = (ad.damping_min || 0).toFixed(2);
+  summaryItems[3].querySelector('.ad-damp-summary-num').textContent = (ad.damping_max || 0).toFixed(2);
+ }
 }
 
 function buildSparkline(history, defaultPos, strokeColor) {

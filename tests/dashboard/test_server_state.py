@@ -20,6 +20,7 @@ from isonome.cognition.pillar import CognitionPillar
 from isonome.praxis.pillar import PraxisPillar
 from isonome.mneme.pillar import MnemePillar
 from isonome.equilibrium.velocity import TensionVelocityTracker
+from isonome.equilibrium import AdaptiveDampingController
 
 
 # ── Fixtures ──────────────────────────────────────────────────────
@@ -36,6 +37,27 @@ def agent_with_attention():
     agent.engine._velocity_tracker = TensionVelocityTracker()
     for axis in agent.engine._axes.values():
         agent.engine._velocity_tracker.register_axis(axis.id)
+    agent.start()
+    return agent
+
+
+@pytest.fixture
+def agent_with_adaptive_damping():
+    """Create a real agent with adaptive damping and velocity tracker enabled."""
+    agent = IsonomeAgent(
+        name="test-ad-agent",
+        cognition=CognitionPillar(),
+        praxis=PraxisPillar(),
+        mneme=MnemePillar(),
+    )
+    vt = TensionVelocityTracker()
+    agent.engine._velocity_tracker = vt
+    ad = AdaptiveDampingController()
+    for axis in agent.engine._axes.values():
+        vt.register_axis(axis.id)
+        ad.register_axis(axis.id, base_damping=axis.damping)
+    ad.velocity_tracker = vt
+    agent.engine._adaptive_damping = ad
     agent.start()
     return agent
 
@@ -208,3 +230,91 @@ class TestLiveAgentState:
         tick1 = live.get_state()["agent"]["tick_count"]
 
         assert tick1 > tick0, "Tick should increment tick count"
+
+
+class TestAdaptiveDampingState:
+    """Test adaptive damping state extraction in dashboard."""
+
+    def test_state_includes_adaptive_damping_key(self, agent_with_adaptive_damping):
+        """Verify extracted state includes adaptive_damping top-level key."""
+        from dashboard.server import extract_agent_state
+
+        state = extract_agent_state(agent_with_adaptive_damping)
+        assert "adaptive_damping" in state, "adaptive_damping should be in state"
+
+    def test_adaptive_damping_has_required_fields(self, agent_with_adaptive_damping):
+        """Verify adaptive damping state contains all expected controller-level fields."""
+        from dashboard.server import extract_agent_state
+
+        state = extract_agent_state(agent_with_adaptive_damping)
+        ad = state["adaptive_damping"]
+        assert isinstance(ad, dict)
+        # Core boolean flag
+        assert "enabled" in ad
+        assert ad["enabled"] is True
+        # Controller-level stats
+        assert "total_adaptations" in ad
+        assert "preemptive_oscillation_count" in ad
+        # Configuration
+        assert "damping_min" in ad
+        assert "damping_max" in ad
+        assert "boost_rate" in ad
+        assert "decay_rate" in ad
+        assert "stability_window" in ad
+        assert "preemptive_boost_rate" in ad
+        # Per-axis detail
+        assert "axis_detail" in ad
+
+    def test_adaptive_damping_axis_detail_structure(self, agent_with_adaptive_damping):
+        """Verify each axis in axis_detail has the expected sub-fields."""
+        from dashboard.server import extract_agent_state
+
+        state = extract_agent_state(agent_with_adaptive_damping)
+        ad = state["adaptive_damping"]
+        axis_detail = ad.get("axis_detail", {})
+        assert isinstance(axis_detail, dict)
+        assert len(axis_detail) > 0, "axis_detail should have at least one axis"
+
+        for axis_id, detail in axis_detail.items():
+            assert "effective_damping" in detail, f"{axis_id}: missing effective_damping"
+            assert "base_damping" in detail, f"{axis_id}: missing base_damping"
+            assert "damping_delta" in detail, f"{axis_id}: missing damping_delta"
+            assert "oscillation_severity" in detail, f"{axis_id}: missing oscillation_severity"
+            assert "stability_counter" in detail, f"{axis_id}: missing stability_counter"
+            assert "pillar" in detail, f"{axis_id}: missing pillar"
+            # Values should be numeric
+            assert isinstance(detail["effective_damping"], (int, float)), f"{axis_id}: effective_damping not numeric"
+            assert isinstance(detail["base_damping"], (int, float)), f"{axis_id}: base_damping not numeric"
+            assert isinstance(detail["damping_delta"], (int, float)), f"{axis_id}: damping_delta not numeric"
+            assert isinstance(detail["oscillation_severity"], (int, float)), f"{axis_id}: oscillation_severity not numeric"
+            assert isinstance(detail["stability_counter"], int), f"{axis_id}: stability_counter not int"
+            assert isinstance(detail["pillar"], str), f"{axis_id}: pillar not str"
+
+    def test_adaptive_damping_enabled_in_live_agent(self):
+        """Verify LiveAgent enables adaptive damping and produces valid state."""
+        from dashboard.server import LiveAgent
+
+        live = LiveAgent()
+        state = live.get_state()
+        ad = state.get("adaptive_damping")
+        assert ad is not None, "LiveAgent state should include adaptive_damping"
+        assert ad.get("enabled") is True, "Adaptive damping should be enabled in LiveAgent"
+        assert len(ad.get("axis_detail", {})) > 0, "LiveAgent should have axis_detail entries"
+
+    def test_adaptive_damping_state_json_serializable(self, agent_with_adaptive_damping):
+        """Verify adaptive damping state can be serialized to JSON."""
+        from dashboard.server import extract_agent_state
+
+        state = extract_agent_state(agent_with_adaptive_damping)
+        # Should not raise
+        json_str = json.dumps(state, default=str)
+        parsed = json.loads(json_str)
+        assert "adaptive_damping" in parsed
+        assert "axis_detail" in parsed["adaptive_damping"]
+
+    def test_adaptive_damping_none_when_not_enabled(self, agent_with_attention):
+        """Verify adaptive_damping is None when no controller is attached."""
+        from dashboard.server import extract_agent_state
+
+        state = extract_agent_state(agent_with_attention)
+        assert state.get("adaptive_damping") is None, "Should be None without controller"
