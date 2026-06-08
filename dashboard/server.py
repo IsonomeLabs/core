@@ -623,6 +623,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def _snapshot_mjpeg(self) -> None:
         """Read one frame from the MJPEG stream and return it as a single JPEG."""
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(3.0)
@@ -672,10 +673,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(exc)}).encode())
         finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
 
     def _send_json(self, data: dict, status: int = 200) -> None:
         payload = json.dumps(data, default=str).encode()

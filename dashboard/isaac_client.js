@@ -372,13 +372,20 @@ function startSnapshotPolling() {
   snapshotTimer = setInterval(async () => {
     try {
       const resp = await fetch(SNAPSHOT_URL + "?t=" + Date.now());
-      if (!resp.ok) return;
+      if (!resp.ok) {
+        console.warn("Snapshot HTTP error:", resp.status, resp.statusText);
+        return;
+      }
       const blob = await resp.blob();
+      if (blob.size === 0) {
+        console.warn("Snapshot empty blob");
+        return;
+      }
       if (lastObjectUrl) URL.revokeObjectURL(lastObjectUrl);
       lastObjectUrl = URL.createObjectURL(blob);
       if (els.streamImg) els.streamImg.src = lastObjectUrl;
     } catch (e) {
-      // ignore
+      console.warn("Snapshot fetch error:", e);
     }
   }, SNAPSHOT_MS);
 }
