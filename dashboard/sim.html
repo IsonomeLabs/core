@@ -385,8 +385,13 @@
           <button id="btn-step" class="btn">STEP</button>
           <button id="btn-reset" class="btn danger">RESET</button>
         </div>
+        <div class="toolbar-group">
+          <input type="text" id="intent-input" placeholder="Intent…" class="btn" style="width:200px">
+          <button id="btn-intent" class="btn primary">SET INTENT</button>
+        </div>
         <div style="flex:1"></div>
         <div class="toolbar-group">
+          <span id="intent-display" class="status-text" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">INTENT: —</span>
           <span id="dof-display" class="status-text">DOF: —</span>
           <span id="time-display" class="status-text">T: —</span>
         </div>
@@ -403,6 +408,13 @@
         <div style="padding: 20px; text-align: center; color: var(--text-dim); font-size: 11px; text-transform: uppercase;">
           No robot loaded
         </div>
+      </div>
+      <div class="sidebar-header" style="border-top:1px solid var(--border);">
+        <span>VLA INSPECTOR</span>
+        <span id="vla-step">—</span>
+      </div>
+      <div class="vla-panel" id="vla-panel" style="overflow-y:auto;font-size:10px;padding:6px 10px;color:var(--text-dim);font-family:inherit;max-height:200px;">
+        <div style="color:var(--text-dim);text-transform:uppercase;font-size:10px;">Waiting for VLA data…</div>
       </div>
       <div class="sidebar-footer">
         <span>UNIT: RAD</span>

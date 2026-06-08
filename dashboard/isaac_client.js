@@ -8,6 +8,7 @@
 const WS_URL = "ws://localhost:8765";
 const SNAPSHOT_URL = "/api/sim/snapshot";
 const STATE_POLL_MS = 100;
+const VLA_POLL_MS = 500;
 const SNAPSHOT_MS = 200;
 
 const els = {
@@ -27,16 +28,22 @@ const els = {
   btnPause: document.getElementById("btn-pause"),
   btnStep: document.getElementById("btn-step"),
   btnReset: document.getElementById("btn-reset"),
+  btnIntent: document.getElementById("btn-intent"),
+  intentInput: document.getElementById("intent-input"),
+  intentDisplay: document.getElementById("intent-display"),
   jointList: document.getElementById("joint-list"),
   jointCount: document.getElementById("joint-count"),
   connStatus: document.getElementById("conn-status"),
   simStatus: document.getElementById("sim-status"),
   dofDisplay: document.getElementById("dof-display"),
   timeDisplay: document.getElementById("time-display"),
+  vlaPanel: document.getElementById("vla-panel"),
+  vlaStep: document.getElementById("vla-step"),
 };
 
 let ws = null;
 let statePollTimer = null;
+let vlaPollTimer = null;
 let joints = [];
 let simState = { playing: false, timestamp: 0 };
 let connected = false;
@@ -45,6 +52,7 @@ let snapshotTimer = null;
 let lastObjectUrl = null;
 let protocol = "—";        // 'webrtc' | 'mjpeg' | 'ws' | '—'
 let webrtcConnecting = false;
+let vlaLog = [];
 
 // ── WebRTC ───────────────────────────────────────────────────────
 let pc = null;
@@ -202,6 +210,7 @@ function connectWebSocket() {
       updateConnectionStatus(true);
       updateProtocolStatus();
       startStatePolling();
+      startVlaPolling();
       startWebRTC();
     };
     ws.onclose = () => {
@@ -212,6 +221,7 @@ function connectWebSocket() {
       updateConnectionStatus(false);
       updateProtocolStatus();
       stopStatePolling();
+      stopVlaPolling();
       stopStatsPolling();
       setStreamStatus("Disconnected — retrying…");
       setTimeout(connectWebSocket, 2000);
@@ -278,6 +288,9 @@ function handleMessage(msg) {
     renderJointList(joints);
     els.uploadStatus.textContent = "LOADED: " + joints.length + " JOINTS";
   }
+  if (msg.ok && msg.observation) {
+    updateVlaPanel(msg.observation);
+  }
 }
 
 // ── State polling ────────────────────────────────────────────────
@@ -304,6 +317,50 @@ function updateState(state) {
   if (state.joints) {
     updateJointValues(state.joints);
   }
+  if (state.intent !== undefined && els.intentDisplay) {
+    els.intentDisplay.textContent = state.intent ? "INTENT: " + state.intent : "INTENT: —";
+  }
+}
+
+// ── VLA Inspector panel ──────────────────────────────────────────
+function startVlaPolling() {
+  if (vlaPollTimer) return;
+  vlaPollTimer = setInterval(() => {
+    sendCommand({ action: "get_observation" });
+  }, VLA_POLL_MS);
+}
+
+function stopVlaPolling() {
+  if (vlaPollTimer) {
+    clearInterval(vlaPollTimer);
+    vlaPollTimer = null;
+  }
+}
+
+function updateVlaPanel(obs) {
+  if (!obs || !els.vlaPanel) return;
+  const intent = obs.intent || "—";
+  const proprio = obs.proprioception || [];
+  const images = obs.image;
+  const nCameras = Array.isArray(images) ? images.length : (images ? 1 : 0);
+  const timestamp = obs.timestamp ? new Date(obs.timestamp * 1000).toLocaleTimeString() : "—";
+
+  const line = document.createElement("div");
+  line.style.borderBottom = "1px solid var(--grid)";
+  line.style.padding = "2px 0";
+  line.innerHTML = `<span style="color:var(--accent-cyan)">${timestamp}</span> ` +
+    `cam=<span style="color:var(--text-bright)">${nCameras}</span> ` +
+    `proprio=[${proprio.length || "—"}] ` +
+    `intent="<span style="color:var(--accent-amber)">${intent.substring(0, 30)}</span>"`;
+
+  vlaLog.push(line);
+  if (vlaLog.length > 20) {
+    const old = vlaLog.shift();
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+  }
+  els.vlaPanel.appendChild(line);
+  els.vlaPanel.scrollTop = els.vlaPanel.scrollHeight;
+  if (els.vlaStep) els.vlaStep.textContent = "LIVE";
 }
 
 // ── Joint UI ─────────────────────────────────────────────────────
@@ -476,6 +533,24 @@ function setupControls() {
     const f = els.uploadInput.files[0];
     if (f) els.uploadStatus.textContent = "READY: " + f.name;
   });
+  if (els.btnIntent && els.intentInput) {
+    els.btnIntent.addEventListener("click", () => {
+      flashButton(els.btnIntent);
+      const text = els.intentInput.value.trim();
+      if (text) {
+        sendCommand({ action: "set_intent", text: text });
+      }
+    });
+    els.intentInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        flashButton(els.btnIntent);
+        const text = els.intentInput.value.trim();
+        if (text) {
+          sendCommand({ action: "set_intent", text: text });
+        }
+      }
+    });
+  }
 }
 
 function updateConnectionStatus(isConnected) {
