@@ -242,11 +242,11 @@ async def main() -> None:
         if i % 10 == 0 or i == args.steps - 1:
             print_vla_panel(inspector, entry)
 
-        # Throttle
+        # Throttle (async so bridge servers get event-loop time)
         elapsed = time.perf_counter() - t0
         sleep = dt_inference - elapsed
         if sleep > 0:
-            time.sleep(sleep)
+            await asyncio.sleep(sleep)
 
     # 10. Summary
     start_ee = np.array(inspector._buffer[0]["ee_pos"], dtype=np.float32) if inspector._buffer[0].get("ee_pos") else None
@@ -268,11 +268,9 @@ async def main() -> None:
     print("=" * 80)
 
     if args.serve:
-        print("\nServers running. Press Ctrl-C to exit.")
-        try:
-            await asyncio.Future()
-        except KeyboardInterrupt:
-            bridge.shutdown()
+        # Give the dashboard a moment to receive the final frames, then exit
+        await asyncio.sleep(2.0)
+        bridge.shutdown()
 
 
 if __name__ == "__main__":
