@@ -50,9 +50,110 @@ try:
 except ImportError:
     HAS_PIL = False
 
+try:
+    from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+    from av import VideoFrame
+
+    HAS_AIORRTC = True
+except ImportError:
+    HAS_AIORRTC = False
+
 
 logger = logging.getLogger("isonome.sim.isaac_bridge")
 
+
+# ── WebRTC helpers ────────────────────────────────────────────────
+
+class _SimVideoTrack(VideoStreamTrack):
+    """Push frames from Isaac Sim viewport into a WebRTC video track."""
+
+    kind = "video"
+
+    def __init__(self, frame_source: Any) -> None:
+        super().__init__()
+        self._frame_source = frame_source  # callable -> np.ndarray RGB or None
+
+    async def recv(self) -> VideoFrame:
+        pts, time_base = await self.next_timestamp()
+        arr = self._frame_source()
+        if arr is None:
+            arr = np.zeros((480, 640, 3), dtype=np.uint8)
+        frame = VideoFrame.from_ndarray(arr, format="rgb24")
+        frame.pts = pts
+        frame.time_base = time_base
+        return frame
+
+
+class WebRTCManager:
+    """Manages PeerConnection lifecycle, signaling, and tracks."""
+
+    def __init__(self, frame_source: Any, on_command: Any) -> None:
+        if not HAS_AIORRTC:
+            raise RuntimeError("aiortc is required: pip install aiortc")
+        self._frame_source = frame_source
+        self._on_command = on_command
+        self._pcs: set[RTCPeerConnection] = set()
+        self._channels: list[Any] = []
+        self._track: _SimVideoTrack | None = None
+
+    def _ensure_track(self) -> _SimVideoTrack:
+        if self._track is None:
+            self._track = _SimVideoTrack(self._frame_source)
+        return self._track
+
+    async def handle_offer(self, sdp: str, type_: str = "offer") -> dict[str, str]:
+        pc = RTCPeerConnection(
+            configuration={
+                "iceServers": [{"urls": "stun:stun.l.google.com:19302"}]
+            }
+        )
+        self._pcs.add(pc)
+
+        @pc.on("connectionstatechange")
+        async def _on_state_change() -> None:
+            logger.info("PC state: %s", pc.connectionState)
+            if pc.connectionState in ("failed", "closed", "disconnected"):
+                self._pcs.discard(pc)
+
+        @pc.on("datachannel")
+        def _on_datachannel(channel: Any) -> None:
+            self._channels.append(channel)
+
+            @channel.on("message")
+            def _on_message(message: str) -> None:
+                async def _respond() -> None:
+                    try:
+                        cmd = json.loads(message)
+                        resp = await self._on_command(cmd)
+                        channel.send(json.dumps(resp))
+                    except Exception as exc:
+                        channel.send(json.dumps({"error": str(exc)}))
+
+                asyncio.create_task(_respond())
+
+        pc.addTrack(self._ensure_track())
+
+        await pc.setRemoteDescription(
+            RTCSessionDescription(sdp=sdp, type=type_)
+        )
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+
+        # Brief pause to gather initial ICE candidates
+        await asyncio.sleep(0.3)
+
+        return {
+            "sdp": pc.localDescription.sdp,
+            "type": pc.localDescription.type,
+        }
+
+    async def close(self) -> None:
+        for pc in list(self._pcs):
+            await pc.close()
+        self._pcs.clear()
+
+
+# ── Isaac Sim Bridge ──────────────────────────────────────────────
 
 class IsaacSimBridge:
     """Manages Isaac Sim world, URDF loading, and remote command serving.
@@ -80,6 +181,13 @@ class IsaacSimBridge:
         self._frame_task: asyncio.Task | None = None
         self._server: Any = None
         self._mjpeg_server: asyncio.AbstractServer | None = None
+        self._webrtc: WebRTCManager | None = None
+
+        if HAS_AIORRTC:
+            self._webrtc = WebRTCManager(
+                frame_source=self._capture_frame_rgb,
+                on_command=self._handle_command,
+            )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -103,7 +211,11 @@ class IsaacSimBridge:
         )
         logger.info(
             "Servers listening",
-            extra={"websocket": self._ws_port, "mjpeg": self._mjpeg_port},
+            extra={
+                "websocket": self._ws_port,
+                "mjpeg": self._mjpeg_port,
+                "webrtc": HAS_AIORRTC,
+            },
         )
         await asyncio.Future()  # run forever
 
@@ -114,6 +226,8 @@ class IsaacSimBridge:
             self._mjpeg_server.close()
         if self._frame_task:
             self._frame_task.cancel()
+        if self._webrtc:
+            asyncio.create_task(self._webrtc.close())
         logger.info("IsaacSimBridge shut down")
 
     # ------------------------------------------------------------------
@@ -153,6 +267,13 @@ class IsaacSimBridge:
             return self._cmd_get_state()
         if action == "set_joints":
             return self._cmd_set_joints(cmd.get("positions", {}))
+        if action == "webrtc_offer":
+            if not self._webrtc:
+                return {"error": "WebRTC not available (aiortc missing)"}
+            answer = await self._webrtc.handle_offer(
+                cmd.get("sdp", ""), cmd.get("type", "offer")
+            )
+            return {"ok": True, "webrtc_answer": answer}
 
         return {"error": f"unknown action: {action}"}
 
@@ -275,6 +396,43 @@ class IsaacSimBridge:
         }
 
     # ------------------------------------------------------------------
+    # Frame capture
+    # ------------------------------------------------------------------
+
+    def _capture_frame_rgb(self) -> "np.ndarray | None":
+        """Capture the active viewport and return an RGB numpy array [H, W, 3]."""
+        if not HAS_PIL or not HAS_ISAAC:
+            return None
+        try:
+            vp = get_active_viewport()
+            texture = vp.get_texture()
+            if texture is None:
+                return None
+
+            import omni.hydra
+
+            device = omni.hydra.get_device()
+            arr = device.read_texture(texture)
+            if arr is None:
+                return None
+
+            # arr is typically [H, W, 4] RGBA — return RGB slice
+            return arr[:, :, :3]
+        except Exception as exc:
+            logger.warning("Frame capture failed", extra={"error": str(exc)})
+            return None
+
+    def _capture_frame_jpeg(self) -> bytes | None:
+        """Capture the active viewport and return JPEG bytes."""
+        arr = self._capture_frame_rgb()
+        if arr is None:
+            return None
+        img = Image.fromarray(arr, mode="RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+
+    # ------------------------------------------------------------------
     # MJPEG streaming
     # ------------------------------------------------------------------
 
@@ -311,38 +469,6 @@ class IsaacSimBridge:
             self._mjpeg_clients.discard(writer)
             writer.close()
             logger.info("MJPEG client disconnected")
-
-    def _capture_frame_jpeg(self) -> bytes | None:
-        """Capture the active viewport and return JPEG bytes."""
-        if not HAS_PIL or not HAS_ISAAC:
-            return None
-        try:
-            vp = get_active_viewport()
-            # get_texture returns a GpuTexture; we need to read it back
-            texture = vp.get_texture()
-            if texture is None:
-                return None
-
-            # Readback via omni.ui or carb rendering APIs
-            import carb
-            from omni.ui import scene as sc
-
-            # Fallback: use Hydra texture readback
-            import omni.hydra
-
-            device = omni.hydra.get_device()
-            arr = device.read_texture(texture)
-            if arr is None:
-                return None
-
-            # arr is typically a numpy array [H, W, 4] RGBA
-            img = Image.fromarray(arr[:, :, :3], mode="RGB")
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=85)
-            return buf.getvalue()
-        except Exception as exc:
-            logger.warning("Frame capture failed", extra={"error": str(exc)})
-            return None
 
 
 # ------------------------------------------------------------------
