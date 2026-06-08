@@ -53,4 +53,20 @@ __all__ = [
     "ExecutionResult",
     "PraxisPillar",
     "RetryPolicy",
+    "VLABase",
+    "MockVLABackend",
+    "OpenVLA",
+    "LLaVARobot",
+    "PiZeroFive",
 ]
+
+try:
+    from isonome.praxis.vla import (
+        VLABase,
+        MockVLABackend,
+        OpenVLA,
+        LLaVARobot,
+        PiZeroFive,
+    )
+except Exception:
+    pass
