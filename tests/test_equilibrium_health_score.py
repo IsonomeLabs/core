@@ -123,6 +123,7 @@ class TestHealthScoreConstruction:
         assert "oscillation" in hs.weights
         assert "cooldown" in hs.weights
         assert "velocity" in hs.weights
+        assert "convergence" in hs.weights
 
     def test_default_weights_sum_to_one(self):
         """Default weights sum to 1.0."""
@@ -132,22 +133,22 @@ class TestHealthScoreConstruction:
 
     def test_custom_weights(self):
         """Custom weights are accepted."""
-        hs = EquilibriumHealthScore(weights={"drift": 0.5, "oscillation": 0.5,
-                                              "cooldown": 0.0, "velocity": 0.0})
-        assert hs.weights["drift"] == 0.5
-        assert hs.weights["oscillation"] == 0.5
+        hs = EquilibriumHealthScore(weights={"drift": 0.4, "oscillation": 0.3,
+                                              "cooldown": 0.1, "velocity": 0.1, "convergence": 0.1})
+        assert hs.weights["drift"] == 0.4
+        assert hs.weights["oscillation"] == 0.3
 
     def test_custom_weights_must_sum_to_one(self):
         """Weights that don't sum to 1.0 raise ValueError."""
         with pytest.raises(ValueError, match="sum to 1.0"):
             EquilibriumHealthScore(weights={"drift": 0.5, "oscillation": 0.3,
-                                            "cooldown": 0.1, "velocity": 0.0})
+                                            "cooldown": 0.1, "velocity": 0.0, "convergence": 0.05})
 
     def test_negative_weight_raises(self):
         """Negative weight raises ValueError."""
         with pytest.raises(ValueError, match="non-negative"):
             EquilibriumHealthScore(weights={"drift": -0.1, "oscillation": 1.1,
-                                            "cooldown": 0.0, "velocity": 0.0})
+                                            "cooldown": 0.0, "velocity": 0.0, "convergence": 0.0})
 
     def test_repr(self):
         """repr includes axis count and score."""
@@ -465,7 +466,7 @@ class TestEngineIntegration:
     def test_custom_scorer(self):
         """Custom scorer passed to engine is used."""
         custom_scorer = EquilibriumHealthScore(
-            weights={"drift": 1.0, "oscillation": 0.0, "cooldown": 0.0, "velocity": 0.0}
+            weights={"drift": 1.0, "oscillation": 0.0, "cooldown": 0.0, "velocity": 0.0, "convergence": 0.0}
         )
         engine = _make_engine(health_scorer=custom_scorer)
         assert engine.health_scorer is custom_scorer
@@ -619,7 +620,7 @@ class TestEdgeCases:
     def test_zero_weight_drift_only(self):
         """All weight on drift, zero elsewhere → overall = drift."""
         hs = EquilibriumHealthScore(
-            weights={"drift": 1.0, "oscillation": 0.0, "cooldown": 0.0, "velocity": 0.0}
+            weights={"drift": 1.0, "oscillation": 0.0, "cooldown": 0.0, "velocity": 0.0, "convergence": 0.0}
         )
         engine = _make_engine()
         result = hs.compute(engine)

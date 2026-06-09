@@ -1120,6 +1120,9 @@ class EquilibriumEngine:
         else:
             self._convergence_detector = None
 
+        # Track previous convergence status for shift detection
+        self._prev_convergence_status: ConvergenceStatus | None = None
+
         # -- Momentum-modulated restoring force integration --
         if momentum_restoring_force is not None:
             self._momentum_restoring_force = momentum_restoring_force

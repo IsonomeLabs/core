@@ -34,6 +34,7 @@ class TensionEventType(StrEnum):
     DEFAULT_ADJUSTED = "default_adjusted"
     OSCILLATION_DETECTED = "oscillation_detected"
     COOLDOWN_APPLIED = "cooldown_applied"
+    CONVERGENCE_SHIFTED = "convergence_shifted"
     RESET = "reset"
 
 

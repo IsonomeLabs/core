@@ -2,10 +2,11 @@
 
 Synthesizes multiple equilibrium signals into a single [0, 1] health metric:
 
-  health = w_d * drift_score
-         + w_o * oscillation_score
-         + w_c * cooldown_score
-         + w_v * velocity_score
+ health = w_d * drift_score
+        + w_o * oscillation_score
+        + w_c * cooldown_score
+        + w_v * velocity_score
+        + w_conv * convergence_score
 
 Where each component score is in [0, 1]:
 - **drift_score**: 1.0 at perfect homeostasis, 0.0 at maximum drift.
@@ -18,11 +19,14 @@ Where each component score is in [0, 1]:
   proportionally to the fraction of (pillar, axis) pairs under cooldown.
 - **velocity_score**: 1.0 when no axes have imminent oscillation,
   decreasing proportionally to the fraction of axes with imminent oscillation.
+- **convergence_score**: 1.0 when convergence detector reports STABLE or
+  CONVERGING, 0.5 when UNKNOWN, 0.0 when DIVERGING. When convergence
+  detection is not enabled, the score defaults to 1.0 (no penalty).
 
-Default weights (drift=0.5, oscillation=0.25, cooldown=0.1, velocity=0.15)
-reflect that drift is the primary health indicator, oscillation is the
-second most important, velocity prediction is a moderate contributor,
-and cooldown is a minor signal.
+Default weights (drift=0.40, oscillation=0.20, cooldown=0.08, velocity=0.12,
+convergence=0.20) reflect that drift is the primary health indicator,
+convergence and oscillation are equally important secondary indicators,
+velocity prediction is a moderate contributor, and cooldown is a minor signal.
 
 The health score is mapped to a HealthLevel enum for human-readable
 classification:
@@ -70,7 +74,7 @@ class HealthLevel(StrEnum):
         - >= 0.7 → GOOD
         - >= 0.5 → FAIR
         - >= 0.3 → POOR
-        - < 0.3  → CRITICAL
+        - < 0.3 → CRITICAL
         """
         if score >= 0.9:
             return cls.EXCELLENT
@@ -96,24 +100,27 @@ class HealthLevel(StrEnum):
         return _VALUES[self]
 
 
-# Default component weights
+# Default component weights (iteration-032: added convergence as 5th component)
 _DEFAULT_WEIGHTS: dict[str, float] = {
-    "drift": 0.5,
-    "oscillation": 0.25,
-    "cooldown": 0.1,
-    "velocity": 0.15,
+    "drift": 0.40,
+    "oscillation": 0.20,
+    "cooldown": 0.08,
+    "velocity": 0.12,
+    "convergence": 0.20,
 }
 
 # Component keys (for validation)
-_COMPONENT_KEYS = frozenset({"drift", "oscillation", "cooldown", "velocity"})
+_COMPONENT_KEYS = frozenset({
+    "drift", "oscillation", "cooldown", "velocity", "convergence"
+})
 
 
 class EquilibriumHealthScore:
     """Composite health score for an EquilibriumEngine.
 
     Computes a weighted combination of drift, oscillation, cooldown,
-    and velocity signals into a single [0, 1] score with per-axis
-    breakdown and human-readable level classification.
+    velocity, and convergence signals into a single [0, 1] score with
+    per-axis breakdown and human-readable level classification.
 
     Usage::
 
@@ -122,18 +129,19 @@ class EquilibriumHealthScore:
         # Standalone
         scorer = EquilibriumHealthScore()
         result = scorer.compute(engine)
-        print(result["overall"])       # 0.85
-        print(result["drift"])         # 0.90
-        print(result["oscillation"])   # 1.00
+        print(result["overall"])  # 0.85
+        print(result["drift"])    # 0.90
+        print(result["oscillation"])  # 1.00
+        print(result["convergence"])  # 1.00
 
         # Via engine
         engine = EquilibriumEngine(enable_health_score=True)
         health = engine.compute_health()
-        print(health["level"])         # "good"
+        print(health["level"])  # "good"
 
         # Via pillar view
         view = engine.view_for(Pillar.COGNITION)
-        print(view.health_level)       # HealthLevel.GOOD
+        print(view.health_level)  # HealthLevel.GOOD
     """
 
     __slots__ = ("_weights",)
@@ -147,10 +155,10 @@ class EquilibriumHealthScore:
 
         Args:
             weights: Custom component weights. Must have keys
-                'drift', 'oscillation', 'cooldown', 'velocity',
-                all non-negative, summing to 1.0.
-                Defaults to drift=0.5, oscillation=0.25,
-                cooldown=0.1, velocity=0.15.
+            'drift', 'oscillation', 'cooldown', 'velocity', 'convergence',
+            all non-negative, summing to 1.0.
+            Defaults to drift=0.40, oscillation=0.20,
+            cooldown=0.08, velocity=0.12, convergence=0.20.
 
         Raises:
             ValueError: If weights are invalid.
@@ -196,6 +204,7 @@ class EquilibriumHealthScore:
         - 'oscillation': oscillation component score in [0, 1]
         - 'cooldown': cooldown component score in [0, 1]
         - 'velocity': velocity component score in [0, 1]
+        - 'convergence': convergence component score in [0, 1]
 
         Args:
             engine: The EquilibriumEngine to evaluate.
@@ -207,12 +216,14 @@ class EquilibriumHealthScore:
         osc_score = self._compute_oscillation(engine)
         cooldown_score = self._compute_cooldown(engine)
         velocity_score = self._compute_velocity(engine)
+        convergence_score = self._compute_convergence(engine)
 
         overall = (
             self._weights["drift"] * drift_score
             + self._weights["oscillation"] * osc_score
             + self._weights["cooldown"] * cooldown_score
             + self._weights["velocity"] * velocity_score
+            + self._weights["convergence"] * convergence_score
         )
         # Clamp to [0, 1] for safety
         overall = max(0.0, min(1.0, overall))
@@ -223,6 +234,7 @@ class EquilibriumHealthScore:
             "oscillation": osc_score,
             "cooldown": cooldown_score,
             "velocity": velocity_score,
+            "convergence": convergence_score,
         }
 
     def health_level(self, engine: EquilibriumEngine) -> HealthLevel:  # type: ignore[name-defined]
@@ -288,6 +300,7 @@ class EquilibriumHealthScore:
                 "oscillation": scores["oscillation"],
                 "cooldown": scores["cooldown"],
                 "velocity": scores["velocity"],
+                "convergence": scores["convergence"],
             },
             "per_axis": self.per_axis(engine),
         }
@@ -432,6 +445,37 @@ class EquilibriumHealthScore:
         fraction = imminent_count / n_axes
         return max(0.0, 1.0 - fraction)
 
+    def _compute_convergence(self, engine: EquilibriumEngine) -> float:  # type: ignore[name-defined]
+        """Convergence component: penalizes diverging equilibrium.
+
+        When convergence detection is enabled, maps the current
+        ConvergenceStatus to a score:
+        - STABLE or CONVERGING → 1.0 (system is at or heading to equilibrium)
+        - UNKNOWN → 0.5 (insufficient data, neutral)
+        - DIVERGING → 0.0 (system is moving away from equilibrium)
+
+        When convergence detection is not enabled, returns 1.0
+        (no detector = no convergence penalty).
+        """
+        from isonome.equilibrium.convergence import (
+            ConvergenceDetector,
+            ConvergenceStatus,
+        )
+
+        detector = getattr(engine, 'convergence_detector', None)
+        if detector is None:
+            return 1.0
+
+        status = detector.current_status
+        if status == ConvergenceStatus.STABLE:
+            return 1.0
+        elif status == ConvergenceStatus.CONVERGING:
+            return 1.0
+        elif status == ConvergenceStatus.DIVERGING:
+            return 0.0
+        else:  # UNKNOWN
+            return 0.5
+
     # ── Serialization ──────────────────────────────────────────
 
     def to_dict(self) -> dict[str, Any]:
@@ -444,6 +488,11 @@ class EquilibriumHealthScore:
     def from_dict(cls, data: dict[str, Any]) -> EquilibriumHealthScore:
         """Deserialize health scorer from a dict produced by to_dict().
 
+        Backward compatibility: if the serialized weights lack the
+        'convergence' key (pre-iteration-032 format), the default
+        convergence weight (0.20) is inserted and the remaining
+        weights are renormalized so they sum to 1.0.
+
         Args:
             data: A dict produced by to_dict().
 
@@ -452,6 +501,16 @@ class EquilibriumHealthScore:
         """
         weights = data.get("weights")
         if weights is not None:
+            weights = dict(weights)
+            # Backward compatibility: add missing 'convergence' key
+            if "convergence" not in weights:
+                # Insert default convergence weight and renormalize
+                old_total = sum(weights.values())
+                if old_total > 0:
+                    # Scale down old weights to make room for convergence=0.20
+                    scale = (1.0 - 0.20) / old_total
+                    weights = {k: v * scale for k, v in weights.items()}
+                weights["convergence"] = 0.20
             return cls(weights=weights)
         return cls()
 
@@ -461,5 +520,6 @@ class EquilibriumHealthScore:
             f"drift={self._weights['drift']:.2f}, "
             f"osc={self._weights['oscillation']:.2f}, "
             f"cool={self._weights['cooldown']:.2f}, "
-            f"vel={self._weights['velocity']:.2f})"
+            f"vel={self._weights['velocity']:.2f}, "
+            f"conv={self._weights['convergence']:.2f})"
         )
