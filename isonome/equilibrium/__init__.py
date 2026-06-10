@@ -338,6 +338,11 @@ class PillarEquilibriumView:
         """
         return self._convergence_status
 
+    @property
+    def event_log(self) -> TensionEventLog | None:
+        """The tension event log, or None if event logging is disabled."""
+        return self._event_log
+
     # ── Engine adapter interface for health scorer ─────────────
 
     @property
