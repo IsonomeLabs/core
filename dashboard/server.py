@@ -52,6 +52,7 @@ from isonome.praxis.pillar import PraxisPillar
 from isonome.mneme.pillar import MnemePillar
 from isonome.equilibrium.velocity import TensionVelocityTracker
 from isonome.equilibrium.event_log import TensionEventLog, TensionEventType
+from isonome.equilibrium import AdaptiveDampingController
 from isonome.types import Task
 
 
@@ -124,16 +125,31 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
     ad = engine.adaptive_damping
     ad_state = None
     if ad is not None:
+        # Per-axis detail: effective damping vs base, severity, stability counter
+        axis_detail = {}
+        all_eff = ad.all_effective_dampings()
+        for axis_id, eff_damp in all_eff.items():
+            axis_obj = engine._axes.get(axis_id)
+            base = axis_obj.damping if axis_obj else eff_damp
+            axis_detail[axis_id] = {
+            "effective_damping": round(eff_damp, 4),
+            "base_damping": round(base, 4),
+            "damping_delta": round(eff_damp - base, 4),
+            "oscillation_severity": round(ad.get_oscillation_severity(axis_id), 4),
+            "stability_counter": ad.get_stability_counter(axis_id),
+            "pillar": engine._axes[axis_id].pillar.value if axis_id in engine._axes else "unknown",
+            }
         ad_state = {
-            "enabled": ad._enabled,
-            "axis_damping": {
-                k: {
-                    "damping_boost": v.damping_boost,
-                    "oscillation_count": v.oscillation_count,
-                    "severity": v.severity,
-                }
-                for k, v in ad._axis_states.items()
-            } if hasattr(ad, '_axis_states') else {},
+        "enabled": True,
+        "total_adaptations": ad.total_adaptations,
+        "preemptive_oscillation_count": ad.preemptive_oscillation_count,
+        "damping_min": ad.damping_min,
+        "damping_max": ad.damping_max,
+        "boost_rate": ad.boost_rate,
+        "decay_rate": ad.decay_rate,
+        "stability_window": ad.stability_window,
+        "preemptive_boost_rate": ad.preemptive_boost_rate,
+        "axis_detail": axis_detail,
         }
 
     # Pillar activity
@@ -351,6 +367,12 @@ class LiveAgent:
         self.agent.engine._velocity_tracker = TensionVelocityTracker()
         for axis in self.agent.engine._axes.values():
             self.agent.engine._velocity_tracker.register_axis(axis.id)
+        # Enable adaptive damping for the adaptive damping dashboard panel
+        self.agent.engine._adaptive_damping = AdaptiveDampingController()
+        for axis in self.agent.engine._axes.values():
+            self.agent.engine._adaptive_damping.register_axis(axis.id, axis.damping)
+        # Wire velocity tracker to adaptive damping for preemptive detection
+        self.agent.engine._adaptive_damping.velocity_tracker = self.agent.engine._velocity_tracker
         # Enable tension event logging for the event log dashboard panel
         self.agent.engine._event_log = TensionEventLog()
         self.agent.start()

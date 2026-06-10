@@ -33,6 +33,8 @@ class TensionEventType(StrEnum):
     FEEDBACK_APPLIED = "feedback_applied"
     DEFAULT_ADJUSTED = "default_adjusted"
     OSCILLATION_DETECTED = "oscillation_detected"
+    COOLDOWN_APPLIED = "cooldown_applied"
+    CONVERGENCE_SHIFTED = "convergence_shifted"
     RESET = "reset"
 
 
@@ -381,6 +383,369 @@ class TensionEventLog:
         if not counts:
             return None
         return max(counts, key=counts.get)  # type: ignore[arg-type]
+
+    def cooldown_stats(self) -> dict[str, Any]:
+        """Compute summary statistics for COOLDOWN_APPLIED events.
+
+        Returns:
+            A dict with:
+            - total_cooldown_events: total number of cooldown events
+            - affected_axes: list of axis IDs that have been cooled down
+            - affected_pillars: list of Pillar values that triggered cooldown
+            - avg_multiplier: average cooldown multiplier across all events
+            - per_axis: dict mapping axis_id to count of cooldown events
+        """
+        cooldown_events = self.query(event_type=TensionEventType.COOLDOWN_APPLIED)
+        if not cooldown_events:
+            return {
+                "total_cooldown_events": 0,
+                "affected_axes": [],
+                "affected_pillars": [],
+                "avg_multiplier": 0.0,
+                "per_axis": {},
+            }
+
+        axes: set[TensionID] = set()
+        pillars: set[Pillar] = set()
+        total_multiplier = 0.0
+        per_axis: dict[TensionID, int] = {}
+
+        for event in cooldown_events:
+            axes.add(event.axis_id)
+            pillars.add(event.source_pillar)
+            total_multiplier += event.delta
+            per_axis[event.axis_id] = per_axis.get(event.axis_id, 0) + 1
+
+        avg = total_multiplier / len(cooldown_events)
+
+        return {
+            "total_cooldown_events": len(cooldown_events),
+            "affected_axes": sorted(axes),
+            "affected_pillars": sorted(pillars, key=lambda p: p.value),
+            "avg_multiplier": avg,
+            "per_axis": per_axis,
+        }
+
+    # ── Advanced Analysis ──────────────────────────────────────
+
+    def pillar_stress_scores(self) -> dict[Pillar, float]:
+        """Compute per-pillar stress scores from feedback events.
+
+        Each pillar's stress score is the sum of |delta| * confidence
+        across all FEEDBACK_APPLIED events from that pillar. This
+        measures how much force each pillar is exerting on the system.
+
+        Returns:
+            Dict mapping Pillar to its cumulative stress score.
+            Empty dict if no feedback events exist.
+        """
+        scores: dict[Pillar, float] = {}
+        for event in self._events:
+            if event.event_type != TensionEventType.FEEDBACK_APPLIED:
+                continue
+            weight = abs(event.delta) * event.confidence
+            scores[event.source_pillar] = (
+                scores.get(event.source_pillar, 0.0) + weight
+            )
+        return scores
+
+    def axis_volatility(self) -> dict[TensionID, float]:
+        """Compute per-axis volatility (standard deviation of positions).
+
+        Volatility is the standard deviation of the position_after
+        values for each axis across all events. A high volatility
+        indicates the axis is moving erratically; low volatility
+        indicates stability.
+
+        Returns:
+            Dict mapping axis_id to its position standard deviation.
+            Axes with a single position have volatility 0.0.
+            Engine-wide events (empty axis_id) are excluded.
+        """
+        # Collect per-axis positions
+        axis_positions: dict[TensionID, list[float]] = {}
+        for event in self._events:
+            if not event.axis_id:
+                continue  # Skip engine-wide events
+            if event.axis_id not in axis_positions:
+                axis_positions[event.axis_id] = []
+            axis_positions[event.axis_id].append(event.position_after)
+
+        # Compute stddev for each axis
+        result: dict[TensionID, float] = {}
+        for axis_id, positions in axis_positions.items():
+            n = len(positions)
+            if n <= 1:
+                result[axis_id] = 0.0
+                continue
+            mean = sum(positions) / n
+            variance = sum((p - mean) ** 2 for p in positions) / n
+            result[axis_id] = math.sqrt(variance)
+        return result
+
+    def detect_feedback_bursts(
+        self,
+        *,
+        window: int = 5,
+        threshold: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Detect feedback bursts -- rapid consecutive feedback on one axis.
+
+        A burst is a contiguous window of ticks where the number of
+        FEEDBACK_APPLIED events on a single axis exceeds the threshold.
+
+        Args:
+            window: Number of consecutive ticks to check.
+            threshold: Minimum number of feedback events in the window
+                to qualify as a burst.
+
+        Returns:
+            List of burst dicts, each with:
+            - axis_id: The axis experiencing the burst
+            - tick_start: First tick of the burst window
+            - tick_end: Last tick of the burst window
+            - event_count: Number of feedback events in the window
+        """
+        if not self._events:
+            return []
+
+        # Group FEEDBACK_APPLIED events by axis, preserving tick order
+        axis_events: dict[TensionID, list[TensionEvent]] = {}
+        for event in self._events:
+            if event.event_type != TensionEventType.FEEDBACK_APPLIED:
+                continue
+            if event.axis_id not in axis_events:
+                axis_events[event.axis_id] = []
+            axis_events[event.axis_id].append(event)
+
+        bursts: list[dict[str, Any]] = []
+        for axis_id, events in axis_events.items():
+            if len(events) < threshold:
+                continue
+            # Sliding window over events
+            for i in range(len(events)):
+                window_events = [events[i]]
+                for j in range(i + 1, len(events)):
+                    if events[j].tick - events[i].tick <= window:
+                        window_events.append(events[j])
+                    else:
+                        break
+                if len(window_events) >= threshold:
+                    bursts.append({
+                        'axis_id': axis_id,
+                        'tick_start': window_events[0].tick,
+                        'tick_end': window_events[-1].tick,
+                        'event_count': len(window_events),
+                    })
+                    break  # Only report first burst per axis
+
+        return bursts
+
+    def dominant_feedback_source(self) -> dict[TensionID, dict[str, Any]]:
+        """Identify the dominant feedback source for each axis.
+
+        For each axis that has received feedback, determines which pillar
+        has the highest cumulative |delta| * confidence weight, and reports
+        that pillar along with its total weight and event count.
+
+        Returns:
+            Dict mapping axis_id to a dict with:
+            - pillar: The Pillar with the most influence on this axis
+            - total_weight: Sum of |delta| * confidence for that pillar
+            - event_count: Number of feedback events from that pillar
+        """
+        # Collect per-axis, per-pillar weights
+        axis_pillar_data: dict[
+            TensionID, dict[Pillar, list[float]]
+        ] = {}
+        for event in self._events:
+            if event.event_type != TensionEventType.FEEDBACK_APPLIED:
+                continue
+            if event.axis_id not in axis_pillar_data:
+                axis_pillar_data[event.axis_id] = {}
+            if event.source_pillar not in axis_pillar_data[event.axis_id]:
+                axis_pillar_data[event.axis_id][event.source_pillar] = []
+            axis_pillar_data[event.axis_id][event.source_pillar].append(
+                abs(event.delta) * event.confidence
+            )
+
+        result: dict[TensionID, dict[str, Any]] = {}
+        for axis_id, pillar_weights in axis_pillar_data.items():
+            best_pillar: Pillar | None = None
+            best_total = -1.0
+            best_count = 0
+            for pillar, weights in pillar_weights.items():
+                total = sum(weights)
+                if total > best_total:
+                    best_total = total
+                    best_pillar = pillar
+                    best_count = len(weights)
+            if best_pillar is not None:
+                result[axis_id] = {
+                    'pillar': best_pillar,
+                    'total_weight': best_total,
+                    'event_count': best_count,
+                }
+        return result
+
+    def detect_convergence_from_events(self) -> dict[str, Any]:
+        """Detect convergence/divergence trends from feedback event deltas.
+
+        Analyzes the trend of |delta| values over FEEDBACK_APPLIED
+        events. Decreasing deltas suggest convergence (the system is
+        settling), increasing deltas suggest divergence.
+
+        Also considers OSCILLATION_DETECTED events as a divergence
+        signal.
+
+        Returns:
+            Dict with:
+            - direction: 'converging', 'diverging', 'stable', or 'unknown'
+            - confidence: 0.0 to 1.0 confidence in the direction
+            - trend_slope: Linear regression slope of |delta| over time
+        """
+        # Collect (tick, |delta|) pairs for feedback events
+        feedback_deltas: list[tuple[int, float]] = []
+        has_oscillation = False
+        for event in self._events:
+            if event.event_type == TensionEventType.FEEDBACK_APPLIED:
+                feedback_deltas.append((event.tick, abs(event.delta)))
+            elif event.event_type == TensionEventType.OSCILLATION_DETECTED:
+                has_oscillation = True
+
+        if not feedback_deltas:
+            return {
+                'direction': 'unknown',
+                'confidence': 0.0,
+                'trend_slope': 0.0,
+            }
+
+        # Simple linear regression of |delta| on tick order
+        n = len(feedback_deltas)
+        if n == 1:
+            direction = 'unknown'
+            if has_oscillation:
+                direction = 'diverging'
+            return {
+                'direction': direction,
+                'confidence': 0.0,
+                'trend_slope': 0.0,
+            }
+
+        # x = order index (0, 1, 2, ...), y = |delta|
+        x_mean = (n - 1) / 2.0
+        y_mean = sum(d for _, d in feedback_deltas) / n
+
+        numerator = 0.0
+        denom_x = 0.0
+        denom_y = 0.0
+        for i, (_, delta) in enumerate(feedback_deltas):
+            dx = i - x_mean
+            dy = delta - y_mean
+            numerator += dx * dy
+            denom_x += dx * dx
+            denom_y += dy * dy
+
+        slope = numerator / denom_x if denom_x != 0 else 0.0
+
+        # R-squared for confidence
+        if denom_y != 0:
+            r_squared = (numerator ** 2) / (denom_x * denom_y)
+        else:
+            r_squared = 0.0
+
+        # Determine direction from slope
+        # Use a small epsilon to avoid noise
+        eps = 0.005
+        if slope < -eps:
+            direction = 'converging'
+        elif slope > eps:
+            direction = 'diverging'
+        else:
+            direction = 'stable'
+
+        # Oscillation events bias toward divergence
+        if has_oscillation and direction != 'diverging':
+            direction = 'diverging' if slope > 0 else 'stable'
+            r_squared = min(r_squared + 0.2, 1.0)
+
+        confidence = min(r_squared, 1.0)
+
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'trend_slope': slope,
+        }
+
+    def detect_cross_pillar_conflicts(self) -> list[dict[str, Any]]:
+        """Detect cross-pillar conflicts -- same axis, opposing directions.
+
+        A conflict occurs when two different pillars send feedback
+        to the same axis in opposing directions (one positive delta,
+        one negative delta). The conflict intensity measures how
+        strongly the pillars disagree.
+
+        Returns:
+            List of conflict dicts, each with:
+            - axis_id: The contested axis
+            - pillars: Set of Pillars in conflict
+            - opposing_deltas: Dict of pillar -> signed total delta
+            - conflict_intensity: 0.0 to 1.0 (higher = stronger conflict)
+        """
+        # Collect per-axis, per-pillar signed delta totals
+        axis_deltas: dict[TensionID, dict[Pillar, list[float]]] = {}
+        for event in self._events:
+            if event.event_type != TensionEventType.FEEDBACK_APPLIED:
+                continue
+            if event.axis_id not in axis_deltas:
+                axis_deltas[event.axis_id] = {}
+            if event.source_pillar not in axis_deltas[event.axis_id]:
+                axis_deltas[event.axis_id][event.source_pillar] = []
+            axis_deltas[event.axis_id][event.source_pillar].append(
+                event.delta
+            )
+
+        conflicts: list[dict[str, Any]] = []
+        for axis_id, pillar_deltas in axis_deltas.items():
+            if len(pillar_deltas) < 2:
+                continue  # Need at least 2 different pillars
+
+            # Sum deltas per pillar
+            pillar_totals: dict[Pillar, float] = {}
+            for pillar, deltas in pillar_deltas.items():
+                pillar_totals[pillar] = sum(deltas)
+
+            # Check for opposing signs
+            positive_pillars = [
+                (p, t) for p, t in pillar_totals.items() if t > 0
+            ]
+            negative_pillars = [
+                (p, t) for p, t in pillar_totals.items() if t < 0
+            ]
+
+            if not positive_pillars or not negative_pillars:
+                continue  # Same direction = no conflict
+
+            # Compute conflict intensity: normalized sum of |totals|
+            total_force = sum(abs(t) for t in pillar_totals.values())
+            if total_force == 0:
+                continue
+
+            conflict_intensity = min(total_force / 2.0, 1.0)
+
+            # Build the opposing deltas dict
+            opposing_deltas = {
+                p: t for p, t in pillar_totals.items() if t != 0
+            }
+
+            conflicts.append({
+                'axis_id': axis_id,
+                'pillars': set(pillar_totals.keys()),
+                'opposing_deltas': opposing_deltas,
+                'conflict_intensity': conflict_intensity,
+            })
+
+        return conflicts
 
     # ── Lifecycle ────────────────────────────────────────────────
 

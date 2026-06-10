@@ -31,11 +31,18 @@ from isonome.types import (
     now as now,
 )
 from isonome.equilibrium.velocity import TensionVelocityTracker
+from isonome.equilibrium.cooldown import FeedbackCooldownManager
 from isonome.equilibrium.event_log import (
     TensionEventLog as TensionEventLog,
     TensionEvent as TensionEvent,
     TensionEventType as TensionEventType,
 )
+from isonome.equilibrium.convergence import (
+    ConvergenceDetector as ConvergenceDetector,
+    ConvergenceStatus as ConvergenceStatus,
+    ConvergenceRecord as ConvergenceRecord,
+)
+from isonome.equilibrium.restoring import MomentumRestoringForce
 
 
 class PillarEquilibriumView:
@@ -87,20 +94,27 @@ class PillarEquilibriumView:
     """
 
     __slots__ = (
-        "_pillar",
-        "_own_axes",
-        "_cross_axes",
-        "_all_positions",
-        "_all_defaults",
-        "_stress_level",
-        "_drift",
-        "_oscillating",
-        "_oscillation_threshold",
-        "_velocities",
-        "_momentum_scores",
-        "_oscillation_imminent",
-        "_event_log",
-        "_own_axis_ids",
+    "_pillar",
+    "_own_axes",
+    "_cross_axes",
+    "_all_positions",
+    "_all_defaults",
+    "_stress_level",
+    "_drift",
+    "_oscillating",
+    "_oscillation_threshold",
+    "_velocities",
+    "_momentum_scores",
+    "_oscillation_imminent",
+    "_event_log",
+    "_own_axis_ids",
+    "_feedback_cooldown",
+    "_health_scorer",
+    "_engine_axes",
+    "_engine_adaptive_damping",
+    "_engine_velocity_tracker",
+    "_engine_total_oscillation_events",
+    "_convergence_status",
     )
 
     def __init__(
@@ -111,7 +125,14 @@ class PillarEquilibriumView:
         oscillation_threshold: float,
         velocity_tracker: TensionVelocityTracker | None = None,
         event_log: TensionEventLog | None = None,
-    ):
+        feedback_cooldown: FeedbackCooldownManager | None = None,
+        health_scorer: 'EquilibriumHealthScore | None' = None,
+        _engine_axes: dict[TensionID, TensionAxis] | None = None,
+        _engine_adaptive_damping: 'AdaptiveDampingController | None' = None,
+        _engine_velocity_tracker: 'TensionVelocityTracker | None' = None,
+        _engine_total_oscillation_events: int = 0,
+        convergence_status: ConvergenceStatus | None = None,
+        ):
         # Split axes into own and cross-pillar
         self._pillar = pillar
         self._own_axes: dict[TensionID, float] = {}
@@ -130,6 +151,19 @@ class PillarEquilibriumView:
         # Event log for audit trail (None if disabled)
         self._event_log = event_log
         self._own_axis_ids: tuple[TensionID, ...] = ()
+
+        # Feedback cooldown manager (None if disabled)
+        self._feedback_cooldown = feedback_cooldown
+
+        # Health scorer (None if disabled)
+        self._health_scorer = health_scorer
+
+        # Engine references for health score adapter interface
+        self._engine_axes = _engine_axes if _engine_axes is not None else axes
+        self._engine_adaptive_damping = _engine_adaptive_damping
+        self._engine_velocity_tracker = _engine_velocity_tracker
+        self._engine_total_oscillation_events = _engine_total_oscillation_events
+        self._convergence_status = convergence_status
 
         for axis_id, axis in axes.items():
             pos = axis.position
@@ -273,6 +307,91 @@ class PillarEquilibriumView:
         populated when velocity tracking is enabled.
         """
         return tuple(self._oscillation_imminent)
+
+    @property
+    def feedback_cooldown(self) -> FeedbackCooldownManager | None:
+        """The feedback cooldown manager, or None if not enabled."""
+        return self._feedback_cooldown
+
+    @property
+    def health_score(self) -> dict[str, Any] | None:
+        """Equilibrium health score summary, or None if not enabled."""
+        if self._health_scorer is None:
+            return None
+        return self._health_scorer.summary(self)
+
+    @property
+    def health_level(self) -> 'HealthLevel | None':
+        """Equilibrium health level, or None if not enabled."""
+        if self._health_scorer is None:
+            return None
+        return self._health_scorer.health_level(self)
+
+    @property
+    def convergence_status(self) -> ConvergenceStatus | None:
+        """Current convergence status of the equilibrium engine.
+
+        Returns:
+            ConvergenceStatus indicating whether the system is converging
+            toward homeostasis, diverging away, stable, or unknown.
+            None if convergence detection is not enabled.
+        """
+        return self._convergence_status
+
+    @property
+    def event_log(self) -> TensionEventLog | None:
+        """The tension event log, or None if event logging is disabled."""
+        return self._event_log
+
+    # ── Engine adapter interface for health scorer ─────────────
+
+    @property
+    def axes(self) -> tuple[TensionAxis, ...]:
+        """All tension axes (engine adapter for health scorer)."""
+        return tuple(self._engine_axes.values())
+
+    def tension_distance(self) -> float:
+        """RMS drift from homeostasis (engine adapter for health scorer)."""
+        if not self._engine_axes:
+            return 0.0
+        squared = sum(
+            a.distance_from_default() ** 2 for a in self._engine_axes.values()
+        )
+        return math.sqrt(squared / len(self._engine_axes))
+
+    @property
+    def adaptive_damping(self) -> 'AdaptiveDampingController | None':
+        """Adaptive damping controller (engine adapter for health scorer)."""
+        return self._engine_adaptive_damping
+
+    @property
+    def velocity_tracker(self) -> 'TensionVelocityTracker | None':
+        """Velocity tracker (engine adapter for health scorer)."""
+        return self._engine_velocity_tracker
+
+    @property
+    def total_oscillation_events(self) -> int:
+        """Total oscillation events (engine adapter for health scorer)."""
+        return self._engine_total_oscillation_events
+
+    @property
+    def cooldown_axes(self) -> tuple[TensionID, ...]:
+        """Axes owned by this pillar that are currently under cooldown.
+
+        An axis is under cooldown if this pillar has sent repeated
+        feedback to it within the cooldown window (multiplier < 1.0).
+        Only populated when feedback cooldown is enabled.
+        """
+        if self._feedback_cooldown is None:
+            return ()
+        cooled = []
+        for axis_id in self._own_axes:
+            multiplier = self._feedback_cooldown.get_multiplier_for(
+                axis_id, self._pillar,
+            )
+            if multiplier < 1.0:
+                cooled.append(axis_id)
+        return tuple(cooled)
 
     # ── Convenience methods ───────────────────────────────────────
 
@@ -872,10 +991,18 @@ class EquilibriumEngine:
         event_log: TensionEventLog | None = None,
         enable_event_log: bool = False,
         event_log_max_events: int = 1000,
-    ):
+        feedback_cooldown: FeedbackCooldownManager | None = None,
+        enable_feedback_cooldown: bool = False,
+        health_scorer: 'EquilibriumHealthScore | None' = None,
+        enable_health_score: bool = False,
+        convergence_detector: ConvergenceDetector | None = None,
+        enable_convergence_detection: bool = False,
+        momentum_restoring_force: MomentumRestoringForce | None = None,
+        enable_momentum_restoring_force: bool = False,
+        ):
         """Initialize the equilibrium engine.
-
-        Args:
+        
+            Args:
             axes: Custom tension axes. Defaults to DEFAULT_AXES if None.
             oscillation_threshold: Max stddev before oscillation is declared.
             oscillation_window: Number of recent positions to track per axis.
@@ -892,7 +1019,26 @@ class EquilibriumEngine:
             enable_velocity_tracking: If True and velocity_tracker is None,
                 create a default TensionVelocityTracker. If False (default),
                 velocity tracking is disabled for backward compatibility.
-        """
+            feedback_cooldown: An existing FeedbackCooldownManager to bind.
+                If None and enable_feedback_cooldown is True, a default
+                manager is created automatically.
+            enable_feedback_cooldown: If True and feedback_cooldown is None,
+                create a default FeedbackCooldownManager. If False (default),
+                feedback cooldown is disabled for backward compatibility.
+            convergence_detector: An existing ConvergenceDetector to bind.
+                If None and enable_convergence_detection is True, a default
+                detector is created automatically.
+            enable_convergence_detection: If True and convergence_detector
+            is None, create a default ConvergenceDetector. If False
+            (default), convergence detection is disabled.
+            momentum_restoring_force: An existing MomentumRestoringForce
+            to bind. If None and enable_momentum_restoring_force is True,
+            a default controller is created automatically.
+            enable_momentum_restoring_force: If True and
+            momentum_restoring_force is None, create a default
+            MomentumRestoringForce. Requires velocity tracking.
+            If False (default), the restoring force is disabled.
+            """
         axes = tuple(axes) if axes is not None else self.DEFAULT_AXES
         # Initialize each axis with its position set to its default_position,
         # ensuring the agent starts at homeostasis.
@@ -954,6 +1100,48 @@ class EquilibriumEngine:
         else:
             self._event_log = None
 
+        # -- Feedback cooldown integration --
+        if feedback_cooldown is not None:
+            self._feedback_cooldown = feedback_cooldown
+        elif enable_feedback_cooldown:
+            self._feedback_cooldown = FeedbackCooldownManager()
+        else:
+            self._feedback_cooldown = None
+
+        # -- Health scoring integration --
+        if health_scorer is not None:
+            self._health_scorer = health_scorer
+        elif enable_health_score:
+            from isonome.equilibrium.health import EquilibriumHealthScore
+            self._health_scorer = EquilibriumHealthScore()
+        else:
+            self._health_scorer = None
+
+        # -- Convergence detection integration --
+        if convergence_detector is not None:
+            self._convergence_detector = convergence_detector
+        elif enable_convergence_detection:
+            self._convergence_detector = ConvergenceDetector()
+        else:
+            self._convergence_detector = None
+
+        # Track previous convergence status for shift detection
+        self._prev_convergence_status: ConvergenceStatus | None = None
+
+        # -- Momentum-modulated restoring force integration --
+        if momentum_restoring_force is not None:
+            self._momentum_restoring_force = momentum_restoring_force
+        elif enable_momentum_restoring_force:
+            if not enable_velocity_tracking and velocity_tracker is None:
+                raise ValueError(
+                    "Momentum-modulated restoring force requires velocity "
+                    "tracking. Enable with enable_velocity_tracking=True "
+                    "or provide a velocity_tracker."
+                )
+            self._momentum_restoring_force = MomentumRestoringForce()
+        else:
+            self._momentum_restoring_force = None
+
         # ── Public API ───────────────────────────────────────────────
 
     @property
@@ -973,6 +1161,65 @@ class EquilibriumEngine:
     def event_log(self) -> TensionEventLog | None:
         """The tension event log, or None if not enabled."""
         return self._event_log
+
+    @property
+    def feedback_cooldown(self) -> FeedbackCooldownManager | None:
+        """The feedback cooldown manager, or None if not enabled."""
+        return self._feedback_cooldown
+
+    @property
+    def health_scorer(self) -> 'EquilibriumHealthScore | None':
+        """The equilibrium health scorer, or None if not enabled."""
+        return self._health_scorer
+
+    @property
+    def convergence_detector(self) -> ConvergenceDetector | None:
+        """The convergence detector, or None if not enabled."""
+        return self._convergence_detector
+
+    @property
+    def momentum_restoring_force(self) -> MomentumRestoringForce | None:
+        """The momentum-modulated restoring force, or None if not enabled."""
+        return self._momentum_restoring_force
+
+    @property
+    def convergence_status(self) -> ConvergenceStatus | None:
+        """Current convergence status, or None if detection not enabled.
+
+        Returns the latest ConvergenceStatus computed from recent
+        feedback history. None if convergence detection is disabled.
+        """
+        if self._convergence_detector is None:
+            return None
+        return self._convergence_detector.current_status
+
+    def compute_convergence(self) -> ConvergenceRecord | None:
+        """Compute a fresh convergence analysis.
+
+        Forces a new computation of the convergence status based on
+        current axis positions and defaults. Returns a detailed
+        ConvergenceRecord, or None if detection is not enabled.
+
+        This method performs the full computation; for the cached
+        status, use the convergence_status property instead.
+        """
+        if self._convergence_detector is None:
+            return None
+        return self._convergence_detector.compute(
+            {aid: ax.position for aid, ax in self._axes.items()},
+            {aid: ax.default_position for aid, ax in self._axes.items()},
+        )
+
+    def compute_health(self) -> dict[str, Any] | None:
+        """Compute a health score summary for this engine.
+
+        Returns None if health scoring is not enabled.
+        Otherwise returns a dict with 'overall', 'level',
+        'components', and 'per_axis' keys.
+        """
+        if self._health_scorer is None:
+            return None
+        return self._health_scorer.summary(self)
 
 
     def snapshot(self, agent_id=None, trigger=None) -> TensionSnapshot:
@@ -1011,6 +1258,26 @@ class EquilibriumEngine:
         # moves the needle less
         effective_delta = feedback.signal * feedback.confidence
 
+        # Apply feedback cooldown damping if enabled
+        if self._feedback_cooldown is not None:
+            cooldown_mult = self._feedback_cooldown.check_and_apply(
+                feedback.tension_axis_id, feedback.source, self._feedback_count
+            )
+            effective_delta *= cooldown_mult
+            # Record cooldown event in the tension event log if cooldown was applied
+            if self._event_log is not None and cooldown_mult < 1.0:
+                self._tick += 1
+                self._event_log.record(
+                    event_type=TensionEventType.COOLDOWN_APPLIED,
+                    axis_id=feedback.tension_axis_id,
+                    source_pillar=feedback.source,
+                    position_before=axis.position,
+                    position_after=axis.position,  # Cooldown doesn't change position
+                    delta=cooldown_mult,
+                    confidence=feedback.confidence,
+                    tick=self._tick,
+                )
+
         # Apply adaptive damping if controller is enabled
         if self._adaptive_damping is not None:
             adaptive_d = self._adaptive_damping.effective_damping(
@@ -1037,12 +1304,43 @@ class EquilibriumEngine:
                 new_axis.default_position,
             )
 
+        # Apply momentum-modulated restoring force nudge
+        if self._momentum_restoring_force is not None:
+            momentum_score = 0.0
+            if self._velocity_tracker is not None:
+                momentum_score = self._velocity_tracker.get_momentum_score(
+                    feedback.tension_axis_id
+                )
+            restoring_delta = self._momentum_restoring_force.compute(
+                feedback.tension_axis_id,
+                new_axis.position,
+                new_axis.default_position,
+                momentum_score=momentum_score,
+            )
+            if restoring_delta != 0.0:
+                new_position = max(-1.0, min(1.0, new_axis.position + restoring_delta))
+                new_axis = new_axis.model_copy(update={"position": new_position})
+                # Update stored axis with the restored position
+                self._axes[feedback.tension_axis_id] = new_axis
+
         # Notify adaptive damping controller after feedback
         if self._adaptive_damping is not None:
             self._adaptive_damping.on_feedback(
                 feedback.tension_axis_id,
                 self._history[feedback.tension_axis_id],
                 self._axes[feedback.tension_axis_id].damping,
+            )
+
+        # Auto-update convergence detector after position change
+        if self._convergence_detector is not None:
+            velocity = None
+            if self._velocity_tracker is not None:
+                velocity = self._velocity_tracker.get_velocity(feedback.tension_axis_id)
+            self._convergence_detector.on_position_update(
+                feedback.tension_axis_id,
+                new_axis.position,
+                new_axis.default_position,
+                velocity=velocity,
             )
 
         # Record event in the tension event log
@@ -1078,6 +1376,26 @@ class EquilibriumEngine:
             if axis is None:
                 continue
             effective_delta = fb.signal * fb.confidence
+            # Apply feedback cooldown damping if enabled
+            cooldown_mult = 1.0
+            if self._feedback_cooldown is not None:
+                cooldown_mult = self._feedback_cooldown.check_and_apply(
+                    fb.tension_axis_id, fb.source, self._feedback_count
+                )
+                effective_delta *= cooldown_mult
+                # Record cooldown event if cooldown was applied
+                if self._event_log is not None and cooldown_mult < 1.0:
+                    self._tick += 1
+                    self._event_log.record(
+                        event_type=TensionEventType.COOLDOWN_APPLIED,
+                        axis_id=fb.tension_axis_id,
+                        source_pillar=fb.source,
+                        position_before=axis.position,
+                        position_after=axis.position,
+                        delta=cooldown_mult,
+                        confidence=fb.confidence,
+                        tick=self._tick,
+                    )
             # Apply adaptive damping if available
             if self._adaptive_damping is not None:
                 adaptive_d = self._adaptive_damping.effective_damping(
@@ -1101,6 +1419,31 @@ class EquilibriumEngine:
                     new_axis.position,
                     new_axis.default_position,
                 )
+
+        # Phase 3.5: apply momentum-modulated restoring force nudge
+        if self._momentum_restoring_force is not None:
+            for axis_id, new_axis in updates.items():
+                momentum_score = 0.0
+                if self._velocity_tracker is not None:
+                    momentum_score = self._velocity_tracker.get_momentum_score(
+                        axis_id
+                    )
+                restoring_delta = self._momentum_restoring_force.compute(
+                    axis_id,
+                    new_axis.position,
+                    new_axis.default_position,
+                    momentum_score=momentum_score,
+                )
+                if restoring_delta != 0.0:
+                    new_position = max(
+                        -1.0, min(1.0, new_axis.position + restoring_delta)
+                    )
+                    updates[axis_id] = new_axis.model_copy(
+                        update={"position": new_position}
+                    )
+            # Persist restored positions
+            for axis_id, new_axis in updates.items():
+                self._axes[axis_id] = new_axis
 
         # Phase 4: notify adaptive damping controller for each updated axis
         if self._adaptive_damping is not None:
@@ -1202,6 +1545,14 @@ class EquilibriumEngine:
             for axis in self._axes.values():
                 self._velocity_tracker.register_axis(axis.id)
 
+        # Reset convergence detector if present
+        if self._convergence_detector is not None:
+            self._convergence_detector.reset()
+
+        # Reset momentum-modulated restoring force if present
+        if self._momentum_restoring_force is not None:
+            self._momentum_restoring_force.reset()
+
         # Record reset event in the tension event log
         if self._event_log is not None:
             self._tick += 1
@@ -1266,6 +1617,14 @@ class EquilibriumEngine:
             oscillation_threshold=self._oscillation_threshold,
             velocity_tracker=self._velocity_tracker,
             event_log=self._event_log,
+            feedback_cooldown=self._feedback_cooldown,
+            health_scorer=self._health_scorer,
+            _engine_axes=self._axes,
+            _engine_adaptive_damping=self._adaptive_damping,
+            _engine_velocity_tracker=self._velocity_tracker,
+            _engine_total_oscillation_events=self._oscillation_events,
+            convergence_status=self._convergence_detector.current_status
+            if self._convergence_detector is not None else None,
         )
 
     # ── Internal ─────────────────────────────────────────────────
@@ -1350,6 +1709,18 @@ class EquilibriumEngine:
             ),
             "event_log_state": (
                 self._event_log.to_dict() if self._event_log is not None else None
+            ),
+            "feedback_cooldown_state": (
+                self._feedback_cooldown.to_dict() if self._feedback_cooldown is not None else None
+            ),
+            "health_score_state": (
+                self._health_scorer.to_dict() if self._health_scorer is not None else None
+            ),
+            "convergence_detector_state": (
+                self._convergence_detector.to_dict() if self._convergence_detector is not None else None
+            ),
+            "momentum_restoring_force_state": (
+                self._momentum_restoring_force.serialize() if self._momentum_restoring_force is not None else None
             ),
             }
 
@@ -1447,5 +1818,26 @@ class EquilibriumEngine:
         if el_state is not None:
             from isonome.equilibrium.event_log import TensionEventLog
             engine._event_log = TensionEventLog.from_dict(el_state)
+
+        # Restore feedback cooldown if present
+        fc_state = data.get("feedback_cooldown_state")
+        if fc_state is not None:
+            engine._feedback_cooldown = FeedbackCooldownManager.from_dict(fc_state)
+
+        # Restore health scorer if present
+        hs_state = data.get("health_score_state")
+        if hs_state is not None:
+            from isonome.equilibrium.health import EquilibriumHealthScore
+            engine._health_scorer = EquilibriumHealthScore.from_dict(hs_state)
+
+        # Restore convergence detector if present
+        cd_state = data.get("convergence_detector_state")
+        if cd_state is not None:
+            engine._convergence_detector = ConvergenceDetector.from_dict(cd_state)
+
+        # Restore momentum restoring force if present
+        mrf_state = data.get("momentum_restoring_force_state")
+        if mrf_state is not None:
+            engine._momentum_restoring_force = MomentumRestoringForce.from_serialized(mrf_state)
 
         return engine

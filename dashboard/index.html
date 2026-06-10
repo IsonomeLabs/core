@@ -653,6 +653,136 @@
 }
 
 /* ── Tension Event Log ───────────────────────────────── */
+/* ── Adaptive Damping ───────────────────────────────── */
+.ad-damp-grid {
+ display: grid;
+ grid-template-columns: 1fr;
+ gap: 4px;
+}
+.ad-damp-row {
+ display: grid;
+ grid-template-columns: 140px 1fr 64px 64px 48px;
+ align-items: center;
+ gap: 8px;
+ padding: 4px 6px;
+ background: var(--surface2);
+}
+.ad-damp-label {
+ font-size: 10px;
+ display: flex;
+ flex-direction: column;
+ gap: 1px;
+}
+.ad-damp-axis-name {
+ font-weight: 600;
+ font-size: 10px;
+}
+.ad-damp-bar-container {
+ position: relative;
+ height: 12px;
+ background: #0a0a0a;
+ border: 1px solid var(--border);
+}
+.ad-damp-bar-base {
+ position: absolute;
+ top: 0;
+ width: 1px;
+ height: 100%;
+ background: var(--text-dim);
+ z-index: 2;
+ opacity: 0.5;
+}
+.ad-damp-bar-fill {
+ position: absolute;
+ top: 1px;
+ bottom: 1px;
+ background: var(--accent-amber);
+ opacity: 0.6;
+}
+.ad-damp-bar-fill.damp-boosted {
+ background: var(--accent-red);
+ opacity: 0.7;
+}
+.ad-damp-bar-fill.damp-stable {
+ background: var(--accent-green);
+ opacity: 0.5;
+}
+.ad-damp-value {
+ font-family: inherit;
+ font-size: 10px;
+ text-align: right;
+ font-weight: 500;
+}
+.ad-damp-delta {
+ font-family: inherit;
+ font-size: 10px;
+ text-align: right;
+ font-weight: 600;
+}
+.ad-damp-delta-positive { color: var(--accent-red); }
+.ad-damp-delta-negative { color: var(--accent-green); }
+.ad-damp-delta-neutral { color: var(--text-dim); }
+.ad-severity-indicator {
+ font-family: inherit;
+ font-size: 9px;
+ text-align: center;
+ font-weight: 700;
+ width: 36px;
+ height: 16px;
+ line-height: 16px;
+ border: 1px solid var(--border);
+ display: inline-block;
+}
+.ad-severity-low { color: var(--accent-green); border-color: var(--accent-green); }
+.ad-severity-medium { color: var(--accent-amber); border-color: var(--accent-amber); }
+.ad-severity-high { color: var(--accent-red); border-color: var(--accent-red); }
+.ad-damp-summary-row {
+ display: flex;
+ gap: 20px;
+ margin-top: 8px;
+ justify-content: center;
+ flex-wrap: wrap;
+}
+.ad-damp-summary-item {
+ display: flex;
+ flex-direction: column;
+ align-items: center;
+ gap: 2px;
+}
+.ad-damp-summary-num {
+ font-family: inherit;
+ font-size: 16px;
+ font-weight: 700;
+ color: var(--text-bright);
+}
+.ad-damp-summary-label {
+ font-size: 8px;
+ color: var(--text-dim);
+ text-transform: uppercase;
+ letter-spacing: 0.08em;
+}
+.ad-damp-config {
+ display: flex;
+ gap: 16px;
+ margin-top: 8px;
+ justify-content: center;
+ font-size: 9px;
+ color: var(--text-dim);
+}
+.ad-damp-config span {
+ display: flex;
+ align-items: center;
+ gap: 4px;
+}
+.ad-damp-config strong {
+ color: var(--text);
+ font-weight: 600;
+}
+.pillar-cognition .ad-damp-axis-name { color: var(--accent-cyan); }
+.pillar-praxis .ad-damp-axis-name { color: var(--accent-amber); }
+.pillar-mneme .ad-damp-axis-name { color: var(--accent-green); }
+
+/* ── Tension Event Log ───────────────────────────────── */
 .eventlog-summary {
     display: flex;
     gap: 24px;
@@ -787,6 +917,159 @@
     padding: 8px 0;
 }
 
+/* ── Convergence & Health ─────────────────────────────── */
+.health-gauge-container {
+ display: flex;
+ align-items: center;
+ gap: 16px;
+ margin-bottom: 10px;
+}
+.health-gauge-ring {
+ position: relative;
+ width: 80px;
+ height: 80px;
+}
+.health-gauge-ring svg {
+ width: 100%;
+ height: 100%;
+ transform: rotate(-90deg);
+}
+.health-gauge-bg {
+ fill: none;
+ stroke: var(--border);
+ stroke-width: 6;
+}
+.health-gauge-fill {
+ fill: none;
+ stroke-width: 6;
+ stroke-linecap: round;
+ transition: stroke-dashoffset 0.6s ease, stroke 0.3s ease;
+}
+.health-gauge-value {
+ position: absolute;
+ top: 50%;
+ left: 50%;
+ transform: translate(-50%, -50%);
+ font-family: inherit;
+ font-size: 16px;
+ font-weight: 700;
+}
+.health-gauge-label {
+ position: absolute;
+ top: 50%;
+ left: 50%;
+ transform: translate(-50%, calc(-50% + 14px));
+ font-size: 8px;
+ color: var(--text-dim);
+ text-transform: uppercase;
+ letter-spacing: 0.06em;
+}
+.health-level-good { color: var(--accent-green); }
+.health-level-moderate { color: var(--accent-amber); }
+.health-level-poor { color: var(--accent-red); }
+.health-details {
+ display: flex;
+ flex-direction: column;
+ gap: 3px;
+}
+.health-component-row {
+ display: flex;
+ justify-content: space-between;
+ font-size: 10px;
+}
+.health-component-label { color: var(--text-dim); }
+.health-component-value { font-family: inherit; font-weight: 600; }
+.convergence-grid {
+ display: grid;
+ grid-template-columns: 1fr 1fr;
+ gap: 6px;
+ margin-top: 10px;
+}
+.convergence-stat {
+ display: flex;
+ flex-direction: column;
+ align-items: center;
+ gap: 2px;
+ padding: 6px;
+ background: var(--surface2);
+}
+.convergence-stat-value {
+ font-family: inherit;
+ font-size: 16px;
+ font-weight: 700;
+ color: var(--text-bright);
+}
+.convergence-stat-label {
+ font-size: 9px;
+ color: var(--text-dim);
+ text-transform: uppercase;
+ letter-spacing: 0.08em;
+ text-align: center;
+}
+.convergence-status-badge {
+ display: inline-block;
+ font-size: 10px;
+ font-weight: 700;
+ text-transform: uppercase;
+ padding: 2px 10px;
+ border: 1px solid;
+ letter-spacing: 0.06em;
+ margin-bottom: 8px;
+}
+.conv-converging { color: var(--accent-green); border-color: var(--accent-green); }
+.conv-diverging { color: var(--accent-red); border-color: var(--accent-red); }
+.conv-stable { color: var(--accent-cyan); border-color: var(--accent-cyan); }
+.conv-unknown { color: var(--text-dim); border-color: var(--border); }
+.convergence-per-axis {
+ display: grid;
+ grid-template-columns: 1fr;
+ gap: 3px;
+ margin-top: 8px;
+}
+.convergence-axis-row {
+ display: grid;
+ grid-template-columns: 140px 1fr 48px;
+ align-items: center;
+ gap: 8px;
+ padding: 3px 6px;
+ background: var(--surface2);
+ font-size: 10px;
+}
+.convergence-axis-name { font-weight: 600; font-size: 10px; }
+.convergence-axis-bar {
+ height: 8px;
+ background: #0a0a0a;
+ border: 1px solid var(--border);
+ position: relative;
+ overflow: hidden;
+}
+.convergence-axis-fill {
+ position: absolute;
+ top: 0;
+ left: 0;
+ height: 100%;
+ opacity: 0.7;
+}
+.convergence-axis-status {
+ font-size: 9px;
+ font-weight: 600;
+ text-align: center;
+}
+.conv-ax-converging { color: var(--accent-green); }
+.conv-ax-diverging { color: var(--accent-red); }
+.conv-ax-stable { color: var(--accent-cyan); }
+.convergence-trend-container {
+ margin-top: 8px;
+ height: 40px;
+ background: #0a0a0a;
+ border: 1px solid var(--border);
+ overflow: hidden;
+}
+.convergence-trend-container svg {
+ display: block;
+ width: 100%;
+ height: 100%;
+}
 /* ── Responsive ──────────────────────────────────────── */
 @media (max-width: 900px) {
  .dashboard { grid-template-columns: 1fr; }
@@ -920,18 +1203,26 @@
 
   <!-- Velocity & Momentum -->
   <div class="panel panel-wide">
-    <div class="panel-title">TENSION VELOCITY & MOMENTUM</div>
-    <div class="velocity-grid" id="velocity-grid"></div>
-    <div class="velocity-summary-row">
-      <div class="velocity-summary-item">
-        <span id="vel-total-reversals" class="velocity-summary-num">0</span>
-        <span class="velocity-summary-label">Reversals</span>
-      </div>
-      <div class="velocity-summary-item">
-        <span id="vel-total-updates" class="velocity-summary-num">0</span>
-        <span class="velocity-summary-label">Updates</span>
-      </div>
-    </div>
+  <div class="panel-title">TENSION VELOCITY & MOMENTUM</div>
+  <div class="velocity-grid" id="velocity-grid"></div>
+  <div class="velocity-summary-row">
+  <div class="velocity-summary-item">
+  <span id="vel-total-reversals" class="velocity-summary-num">0</span>
+  <span class="velocity-summary-label">Reversals</span>
+  </div>
+  <div class="velocity-summary-item">
+  <span id="vel-total-updates" class="velocity-summary-num">0</span>
+  <span class="velocity-summary-label">Updates</span>
+  </div>
+  </div>
+  </div>
+
+  <!-- Adaptive Damping -->
+  <div class="panel panel-wide">
+  <div class="panel-title">ADAPTIVE DAMPING</div>
+  <div id="ad-damp-container">
+  <div style="font-size:10px;color:var(--text-dim);font-style:italic;padding:8px 0;">No adaptive damping data</div>
+  </div>
   </div>
 
   <!-- Attention Budget -->
@@ -1076,9 +1367,17 @@
     </div>
   </div>
 
+  <!-- Convergence & Health -->
+  <div class="panel panel-wide">
+  <div class="panel-title">CONVERGENCE & HEALTH</div>
+  <div id="convergence-health-container">
+  <div style="font-size:10px;color:var(--text-dim);font-style:italic;padding:8px 0;">No convergence/health data</div>
+  </div>
+  </div>
+
   <!-- Tension Event Log -->
   <div class="panel panel-wide">
-      <div class="panel-title">TENSION EVENT LOG</div>
+  <div class="panel-title">TENSION EVENT LOG</div>
       <div id="eventlog-container">
           <div class="eventlog-no-data">No event log data</div>
       </div>
@@ -1121,15 +1420,17 @@ function setConnected(val) {
 }
 
 function render(state) {
-  renderHeader(state);
-  renderTensions(state);
-  renderStress(state);
-  renderPillars(state);
-  renderVelocity(state);
-  renderEventLog(state);
-  renderAttention(state);
-  renderMneme(state);
-  renderCalibration(state);
+ renderHeader(state);
+ renderTensions(state);
+ renderStress(state);
+ renderPillars(state);
+ renderVelocity(state);
+ renderAdaptiveDamping(state);
+ renderConvergenceHealth(state);
+ renderEventLog(state);
+ renderAttention(state);
+ renderMneme(state);
+ renderCalibration(state);
 }
 
 function renderHeader(state) {
@@ -1335,6 +1636,119 @@ function renderVelocity(state) {
   }
 }
 
+function renderAdaptiveDamping(state) {
+ const container = document.getElementById("ad-damp-container");
+ const ad = state.adaptive_damping;
+
+ if (!ad || !ad.enabled) {
+  container.innerHTML = '<div style="font-size:10px;color:var(--text-dim);font-style:italic;padding:8px 0;">Adaptive damping not active</div>';
+  return;
+ }
+
+ const dampMax = ad.damping_max || 1.0;
+ const axisDetail = ad.axis_detail || {};
+ const axisIds = Object.keys(axisDetail);
+
+ // Build header + grid on first render or if axis count changes
+ if (!container.dataset.built || parseInt(container.dataset.axisCount) !== axisIds.length) {
+  let html = '';
+
+  // Summary row
+  html += '<div class="ad-damp-summary-row">';
+  html += '<div class="ad-damp-summary-item"><span class="ad-damp-summary-num">' + (ad.total_adaptations || 0) + '</span><span class="ad-damp-summary-label">Adaptations</span></div>';
+  html += '<div class="ad-damp-summary-item"><span class="ad-damp-summary-num">' + (ad.preemptive_oscillation_count || 0) + '</span><span class="ad-damp-summary-label">Preemptive</span></div>';
+  html += '<div class="ad-damp-summary-item"><span class="ad-damp-summary-num">' + (ad.damping_min || 0).toFixed(2) + '</span><span class="ad-damp-summary-label">Damp Min</span></div>';
+  html += '<div class="ad-damp-summary-item"><span class="ad-damp-summary-num">' + (ad.damping_max || 0).toFixed(2) + '</span><span class="ad-damp-summary-label">Damp Max</span></div>';
+  html += '</div>';
+
+  // Per-axis grid header
+  html += '<div class="ad-damp-grid">';
+  html += '<div class="ad-damp-row" style="background:transparent;font-weight:600;font-size:9px;color:var(--text-dim);">';
+  html += '<div>Axis</div><div>Damping</div><div>Effective</div><div>Delta</div><div>Sev</div>';
+  html += '</div>';
+
+  for (const axisId of axisIds) {
+   const detail = axisDetail[axisId];
+   const pillar = detail.pillar || 'cognition';
+   html += '<div class="ad-damp-row pillar-' + pillar + '" id="ad-row-' + axisId + '">';
+   html += '<div class="ad-damp-label"><span class="ad-damp-axis-name">' + axisId.replace(/_/g, ' ↔ ') + '</span><span style="font-size:8px;color:var(--text-dim)">' + pillar + '</span></div>';
+   html += '<div class="ad-damp-bar-container" id="ad-bar-' + axisId + '"></div>';
+   html += '<div class="ad-damp-value" id="ad-eff-' + axisId + '">—</div>';
+   html += '<div class="ad-damp-delta" id="ad-delta-' + axisId + '">—</div>';
+   html += '<div id="ad-sev-' + axisId + '"></div>';
+   html += '</div>';
+  }
+  html += '</div>';
+
+  // Config row
+  html += '<div class="ad-damp-config">';
+  html += '<span>Boost <strong>' + (ad.boost_rate || 0) + '</strong></span>';
+  html += '<span>Decay <strong>' + (ad.decay_rate || 0) + '</strong></span>';
+  html += '<span>Window <strong>' + (ad.stability_window || 0) + '</strong></span>';
+  html += '<span>Preempt <strong>' + (ad.preemptive_boost_rate || 0) + '</strong></span>';
+  html += '</div>';
+
+  container.innerHTML = html;
+  container.dataset.built = '1';
+  container.dataset.axisCount = axisIds.length;
+ }
+
+ // Update values for each axis
+ for (const axisId of axisIds) {
+  const detail = axisDetail[axisId];
+  const effDamp = detail.effective_damping || 0;
+  const baseDamp = detail.base_damping || 0;
+  const delta = detail.damping_delta || 0;
+  const severity = detail.oscillation_severity || 0;
+
+  // Bar: fill width proportional to effective damping / max
+  const barEl = document.getElementById('ad-bar-' + axisId);
+  if (barEl) {
+   const fillPct = Math.min((effDamp / dampMax) * 100, 100);
+   const basePct = Math.min((baseDamp / dampMax) * 100, 100);
+   let fillClass = 'ad-damp-bar-fill';
+   if (delta > 0.01) fillClass += ' damp-boosted';
+   else if (delta <= 0) fillClass += ' damp-stable';
+   barEl.innerHTML = '<div class="' + fillClass + '" style="left:0;width:' + fillPct.toFixed(1) + '%"></div>' +
+    '<div class="ad-damp-bar-base" style="left:' + basePct.toFixed(1) + '%"></div>';
+  }
+
+  // Effective value
+  const effEl = document.getElementById('ad-eff-' + axisId);
+  if (effEl) effEl.textContent = effDamp.toFixed(3);
+
+  // Delta with color coding
+  const deltaEl = document.getElementById('ad-delta-' + axisId);
+  if (deltaEl) {
+   const sign = delta >= 0 ? '+' : '';
+   deltaEl.textContent = sign + delta.toFixed(3);
+   deltaEl.className = 'ad-damp-delta';
+   if (delta > 0.01) deltaEl.classList.add('ad-damp-delta-positive');
+   else if (delta < -0.001) deltaEl.classList.add('ad-damp-delta-negative');
+   else deltaEl.classList.add('ad-damp-delta-neutral');
+  }
+
+  // Severity indicator
+  const sevEl = document.getElementById('ad-sev-' + axisId);
+  if (sevEl) {
+   let sevClass = 'ad-severity-indicator ad-severity-low';
+   let sevLabel = 'LOW';
+   if (severity > 0.6) { sevClass = 'ad-severity-indicator ad-severity-high'; sevLabel = 'HIGH'; }
+   else if (severity > 0.25) { sevClass = 'ad-severity-indicator ad-severity-medium'; sevLabel = 'MED'; }
+   sevEl.innerHTML = '<span class="' + sevClass + '">' + sevLabel + '</span>';
+  }
+ }
+
+ // Update summary numbers
+ const summaryItems = container.querySelectorAll('.ad-damp-summary-item');
+ if (summaryItems.length >= 4) {
+  summaryItems[0].querySelector('.ad-damp-summary-num').textContent = ad.total_adaptations || 0;
+  summaryItems[1].querySelector('.ad-damp-summary-num').textContent = ad.preemptive_oscillation_count || 0;
+  summaryItems[2].querySelector('.ad-damp-summary-num').textContent = (ad.damping_min || 0).toFixed(2);
+  summaryItems[3].querySelector('.ad-damp-summary-num').textContent = (ad.damping_max || 0).toFixed(2);
+ }
+}
+
 function buildSparkline(history, defaultPos, strokeColor) {
   // Build an SVG sparkline from position history
   const W = 200, H = 20;
@@ -1356,6 +1770,197 @@ function buildSparkline(history, defaultPos, strokeColor) {
   const midLine = `<line x1="0" y1="${H/2}" x2="${W}" y2="${H/2}" stroke="var(--border)" stroke-width="0.3" opacity="0.3"/>`;
 
   return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${midLine}${defaultLine}${polyline}</svg>`;
+}
+
+function renderConvergenceHealth(state) {
+ const container = document.getElementById("convergence-health-container");
+ const health = state.health || null;
+ const conv = state.convergence || null;
+
+ if (!health && !conv) {
+ container.innerHTML = '<div style="font-size:10px;color:var(--text-dim);font-style:italic;padding:8px 0;">No convergence/health data</div>';
+ return;
+ }
+
+ let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">';
+
+ // ── Health Score Side ──────────────────────────────────
+ html += '<div>';
+ if (health) {
+ const score = health.overall || 0;
+ const level = health.level || 'unknown';
+ const components = health.components || {};
+ const perAxis = health.per_axis || {};
+
+ // Determine color based on level
+ let levelColor = 'var(--text-dim)';
+ let levelClass = 'health-level-poor';
+ if (level === 'good' || level === 'healthy') { levelColor = 'var(--accent-green)'; levelClass = 'health-level-good'; }
+ else if (level === 'moderate' || level === 'warning') { levelColor = 'var(--accent-amber)'; levelClass = 'health-level-moderate'; }
+ else if (level === 'poor' || level === 'critical') { levelColor = 'var(--accent-red)'; levelClass = 'health-level-poor'; }
+
+ // SVG ring gauge
+ const R = 34;
+ const C = 2 * Math.PI * R;
+ const offset = C * (1 - Math.min(Math.max(score, 0), 1));
+
+ html += '<div class="health-gauge-container">';
+ html += '<div class="health-gauge-ring">';
+ html += '<svg viewBox="0 0 80 80">';
+ html += '<circle class="health-gauge-bg" cx="40" cy="40" r="' + R + '"/>';
+ html += '<circle class="health-gauge-fill" cx="40" cy="40" r="' + R + '" stroke="' + levelColor + '" stroke-dasharray="' + C.toFixed(2) + '" stroke-dashoffset="' + offset.toFixed(2) + '"/>';
+ html += '</svg>';
+ html += '<div class="health-gauge-value ' + levelClass + '">' + score.toFixed(2) + '</div>';
+ html += '<div class="health-gauge-label">' + level.toUpperCase() + '</div>';
+ html += '</div>';
+
+ // Component details
+ html += '<div class="health-details">';
+ const compLabels = {
+ stress_balance: 'Stress Balance',
+ oscillation_rate: 'Oscillation Rate',
+ convergence_quality: 'Convergence Quality',
+ damping_adaptivity: 'Damping Adaptivity',
+ };
+ for (const [key, label] of Object.entries(compLabels)) {
+ const val = components[key];
+ if (val != null) {
+ let valColor = 'var(--text-bright)';
+ if (val >= 0.7) valColor = 'var(--accent-green)';
+ else if (val >= 0.4) valColor = 'var(--accent-amber)';
+ else valColor = 'var(--accent-red)';
+ html += '<div class="health-component-row">';
+ html += '<span class="health-component-label">' + label + '</span>';
+ html += '<span class="health-component-value" style="color:' + valColor + '">' + val.toFixed(3) + '</span>';
+ html += '</div>';
+ }
+ }
+ // Per-axis health if available
+ const axisIds = Object.keys(perAxis);
+ if (axisIds.length > 0) {
+ html += '<div style="margin-top:6px;font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em;">Per-Axis Health</div>';
+ for (const axisId of axisIds) {
+ const axScore = perAxis[axisId];
+ let axColor = 'var(--text-bright)';
+ if (axScore >= 0.7) axColor = 'var(--accent-green)';
+ else if (axScore >= 0.4) axColor = 'var(--accent-amber)';
+ else axColor = 'var(--accent-red)';
+ html += '<div class="health-component-row">';
+ html += '<span class="health-component-label" style="max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + axisId.replace(/_/g, ' ↔ ') + '</span>';
+ html += '<span class="health-component-value" style="color:' + axColor + '">' + axScore.toFixed(3) + '</span>';
+ html += '</div>';
+ }
+ }
+ html += '</div>';
+ html += '</div>';
+ } else {
+ html += '<div style="font-size:10px;color:var(--text-dim);font-style:italic;padding:8px 0;">Health scoring not active</div>';
+ }
+ html += '</div>';
+
+ // ── Convergence Side ──────────────────────────────────
+ html += '<div>';
+ if (conv) {
+ const overallStatus = conv.overall_status || 'unknown';
+ const perAxis = conv.per_axis || {};
+ const convRate = conv.convergence_rate || 0;
+ const nConverging = conv.n_converging || 0;
+ const nDiverging = conv.n_diverging || 0;
+ const nStable = conv.n_stable || 0;
+ const totalDetections = conv.total_detections || 0;
+ const trend = conv.trend || [];
+
+ // Overall status badge
+ let badgeClass = 'conv-unknown';
+ let badgeLabel = overallStatus.toUpperCase();
+ if (overallStatus === 'converging') badgeClass = 'conv-converging';
+ else if (overallStatus === 'diverging') badgeClass = 'conv-diverging';
+ else if (overallStatus === 'stable') badgeClass = 'conv-stable';
+
+ html += '<span class="convergence-status-badge ' + badgeClass + '">' + badgeLabel + '</span>';
+
+ // Summary stats grid
+ html += '<div class="convergence-grid">';
+ html += '<div class="convergence-stat"><span class="convergence-stat-value" style="color:var(--accent-green)">' + nConverging + '</span><span class="convergence-stat-label">Converging</span></div>';
+ html += '<div class="convergence-stat"><span class="convergence-stat-value" style="color:var(--accent-red)">' + nDiverging + '</span><span class="convergence-stat-label">Diverging</span></div>';
+ html += '<div class="convergence-stat"><span class="convergence-stat-value" style="color:var(--accent-cyan)">' + nStable + '</span><span class="convergence-stat-label">Stable</span></div>';
+ html += '<div class="convergence-stat"><span class="convergence-stat-value">' + totalDetections + '</span><span class="convergence-stat-label">Detections</span></div>';
+ html += '</div>';
+
+ // Per-axis convergence status
+ const axisEntries = Object.entries(perAxis);
+ if (axisEntries.length > 0) {
+ html += '<div class="convergence-per-axis">';
+ for (const [axisId, status] of axisEntries) {
+ let statusColor = 'var(--text-dim)';
+ let statusLabel = status.toUpperCase();
+ let barColor = 'var(--text-dim)';
+ if (status === 'converging') { statusColor = 'var(--accent-green)'; barColor = 'var(--accent-green)'; }
+ else if (status === 'diverging') { statusColor = 'var(--accent-red)'; barColor = 'var(--accent-red)'; }
+ else if (status === 'stable') { statusColor = 'var(--accent-cyan)'; barColor = 'var(--accent-cyan)'; }
+
+ // Use per-axis health score as bar width if available
+ const hPerAxis = (health && health.per_axis) ? (health.per_axis[axisId] || 0) : 0;
+ const barWidth = Math.max(hPerAxis * 100, 5);
+
+ html += '<div class="convergence-axis-row">';
+ html += '<span class="convergence-axis-name">' + axisId.replace(/_/g, ' ↔ ') + '</span>';
+ html += '<div class="convergence-axis-bar"><div class="convergence-axis-fill" style="width:' + barWidth.toFixed(1) + '%;background:' + barColor + '"></div></div>';
+ html += '<span class="convergence-axis-status" style="color:' + statusColor + '">' + statusLabel.substring(0, 4).toUpperCase() + '</span>';
+ html += '</div>';
+ }
+ html += '</div>';
+ }
+
+ // Convergence trend sparkline
+ if (trend.length >= 2) {
+ html += '<div style="margin-top:8px;font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.05em;">Convergence Rate Trend</div>';
+ html += '<div class="convergence-trend-container">';
+ html += buildConvergenceTrendSparkline(trend);
+ html += '</div>';
+ }
+ } else {
+ html += '<div style="font-size:10px;color:var(--text-dim);font-style:italic;padding:8px 0;">Convergence detection not active</div>';
+ }
+ html += '</div>';
+
+ html += '</div>';
+ container.innerHTML = html;
+}
+
+function buildConvergenceTrendSparkline(trend) {
+ const W = 300, H = 40;
+ const n = trend.length;
+ if (n < 2) return '';
+
+ // Find range for scaling
+ let min = Infinity, max = -Infinity;
+ for (const v of trend) {
+ if (v < min) min = v;
+ if (v > max) max = v;
+ }
+ // Add padding
+ const pad = Math.max((max - min) * 0.1, 0.01);
+ min -= pad;
+ max += pad;
+ const range = max - min;
+
+ const points = trend.map((v, i) => {
+ const x = (i / (n - 1)) * W;
+ const y = H - ((v - min) / range) * (H - 4) - 2;
+ return x.toFixed(1) + ',' + y.toFixed(1);
+ });
+
+ // Zero line if in range
+ let zeroLine = '';
+ if (min <= 0 && max >= 0) {
+ const zeroY = H - ((0 - min) / range) * (H - 4) - 2;
+ zeroLine = '<line x1="0" y1="' + zeroY.toFixed(1) + '" x2="' + W + '" y2="' + zeroY.toFixed(1) + '" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3" opacity="0.5"/>';
+ }
+
+ const polyline = '<polyline points="' + points.join(' ') + '" fill="none" stroke="var(--accent-cyan)" stroke-width="1.2" opacity="0.8"/>';
+
+ return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' + zeroLine + polyline + '</svg>';
 }
 
 function renderEventLog(state) {
