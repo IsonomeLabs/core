@@ -301,7 +301,27 @@ class MuJoCoBridge:
         if action == "get_intent":
             return {"ok": True, "intent": self._current_intent}
         if action == "get_observation":
-            return {"ok": True, "observation": self.get_observation(self._current_intent)}
+            obs = self.get_observation(self._current_intent)
+            # JSON-safe version for WebSocket transport
+            obs_json: dict[str, Any] = {
+                "intent": obs.get("intent", ""),
+                "timestamp": obs.get("timestamp", 0.0),
+            }
+            proprio = obs.get("proprioception")
+            if hasattr(proprio, "tolist"):
+                obs_json["proprioception"] = proprio.tolist()
+            else:
+                obs_json["proprioception"] = proprio
+            images = obs.get("image")
+            if images is None:
+                obs_json["n_cameras"] = 0
+            elif isinstance(images, list):
+                obs_json["n_cameras"] = len(images)
+            else:
+                obs_json["n_cameras"] = 1
+            # Images are served over MJPEG; don't send pixels via WebSocket
+            obs_json["image"] = None
+            return {"ok": True, "observation": obs_json}
         if action == "apply_action":
             return self._cmd_apply_action(cmd.get("action", []))
         if action == "webrtc_offer":
@@ -621,6 +641,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Isonome MuJoCo Bridge")
     parser.add_argument("--ws-port", type=int, default=8765, help="WebSocket command port")
     parser.add_argument("--mjpeg-port", type=int, default=8766, help="MJPEG stream port")
+    parser.add_argument("--urdf", type=str, default="", help="Path to URDF/MuJoCo XML to auto-load on startup")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -633,6 +654,14 @@ def main() -> None:
         websocket_port=args.ws_port,
         mjpeg_port=args.mjpeg_port,
     )
+
+    if args.urdf:
+        result = bridge._cmd_load_urdf(args.urdf)
+        if result.get("ok"):
+            logger.info("Auto-loaded %s (%d joints)", args.urdf, result.get("dof_count", 0))
+        else:
+            logger.error("Failed to auto-load %s: %s", args.urdf, result.get("error"))
+
     asyncio.run(bridge.run())
 
 

@@ -150,12 +150,6 @@ def main() -> None:
         action_lpf_alpha=0.3,
     )
 
-    # 4. Optionally start servers for dashboard viewing
-    if args.serve:
-        logger.info("Starting servers on ws=8765 mjpeg=8766")
-        loop = asyncio.get_event_loop()
-        loop.create_task(bridge.run())
-
     # 5. Run closed-loop
     print(f"\n=== VLA Reach Demo ===")
     print(f"Target:     x={target_pos[0]:.2f} y={target_pos[1]:.2f} z={target_pos[2]:.2f}")
@@ -163,6 +157,48 @@ def main() -> None:
     print(f"Steps:      {args.steps} @ {args.inference_hz} Hz")
     print(f"Physics:    {args.physics_hz} Hz")
     print()
+
+    if args.serve:
+        print("Dashboard: http://localhost:8420/sim")
+        print()
+        # Run controller in a background thread so the event loop stays free
+        # for WebSocket / MJPEG serving
+        async def _run_with_servers() -> None:
+            logger.info("Starting servers on ws=8765 mjpeg=8766")
+            await bridge.run()
+
+        async def _run_controller() -> None:
+            loop = asyncio.get_running_loop()
+            trajectory = await loop.run_in_executor(
+                None, controller.run, args.steps, args.inference_hz, args.physics_hz
+            )
+            # Report results
+            start_ee = np.array(trajectory[0]["ee_pos"], dtype=np.float32)
+            end_ee = np.array(trajectory[-1]["ee_pos"], dtype=np.float32)
+            start_err = compute_reach_error(start_ee, target_pos)
+            end_err = compute_reach_error(end_ee, target_pos)
+            print(f"Start EE:   [{start_ee[0]:+.3f}, {start_ee[1]:+.3f}, {start_ee[2]:+.3f}]")
+            print(f"End EE:     [{end_ee[0]:+.3f}, {end_ee[1]:+.3f}, {end_ee[2]:+.3f}]")
+            print(f"Start dist: {start_err:.4f} m")
+            print(f"End dist:   {end_err:.4f} m")
+            print(f"Improvement: {start_err - end_err:.4f} m")
+            if end_err < 0.05:
+                print("\n✓ Success — end-effector within 5 cm of target")
+            elif end_err < 0.15:
+                print("\n~ Partial — within 15 cm, more tuning needed")
+            else:
+                print("\n✗ Miss — target not reached")
+            print("\nSimulation complete. Servers still running. Press Ctrl-C to exit.")
+            await asyncio.Future()  # keep alive
+
+        async def _main_serve() -> None:
+            await asyncio.gather(_run_with_servers(), _run_controller())
+
+        try:
+            asyncio.run(_main_serve())
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            bridge.shutdown()
+        return
 
     trajectory = controller.run(
         n_steps=args.steps,
@@ -188,13 +224,6 @@ def main() -> None:
         print("\n~ Partial — within 15 cm, more tuning needed")
     else:
         print("\n✗ Miss — target not reached")
-
-    if args.serve:
-        print("\nServers still running. Press Ctrl-C to exit.")
-        try:
-            loop.run_forever()
-        except KeyboardInterrupt:
-            bridge.shutdown()
 
 
 if __name__ == "__main__":

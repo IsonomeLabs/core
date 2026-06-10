@@ -204,7 +204,7 @@ async def main() -> None:
     if args.serve:
         logger.info("Starting servers on ws=8765 mjpeg=8766")
         loop.create_task(bridge.run())
-        print("Dashboard: http://localhost:8765/sim.html")
+        print("Dashboard: http://localhost:8420/sim")
         print()
 
     # 9. Closed-loop tick (perceive → deliberate → act → observe)
@@ -268,9 +268,12 @@ async def main() -> None:
     print("=" * 80)
 
     if args.serve:
-        # Give the dashboard a moment to receive the final frames, then exit
-        await asyncio.sleep(2.0)
-        bridge.shutdown()
+        # Keep servers alive so the dashboard stays interactive
+        print("\nServers still running. Press Ctrl-C to exit.")
+        try:
+            await asyncio.Future()
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            bridge.shutdown()
 
 
 if __name__ == "__main__":

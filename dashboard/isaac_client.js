@@ -244,9 +244,12 @@ function connectWebSocket() {
 function sendCommand(cmd) {
   if (webrtcActive && dc && dc.readyState === "open") {
     dc.send(JSON.stringify(cmd));
+    return true;
   } else if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(cmd));
+    return true;
   }
+  return false;
 }
 
 function handleMessage(msg) {
@@ -486,7 +489,18 @@ async function uploadFile() {
       return;
     }
     els.uploadStatus.textContent = "PARSING MODEL…";
-    sendCommand({ action: "load_urdf", path: data.path });
+    const sent = sendCommand({ action: "load_urdf", path: data.path });
+    if (!sent) {
+      els.uploadStatus.textContent = "ERR: BRIDGE OFFLINE — cannot load";
+      return;
+    }
+
+    // Safety timeout: if the bridge never responds, clear the spinner
+    setTimeout(() => {
+      if (els.uploadStatus.textContent === "PARSING MODEL…") {
+        els.uploadStatus.textContent = "ERR: LOAD TIMEOUT — no response from bridge";
+      }
+    }, 8000);
 
     // Smooth transition: show loading, then activate stream
     setStreamStatus("Loading simulation…");
