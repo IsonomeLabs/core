@@ -38,6 +38,8 @@ safety:
 sim:
   engine: pybullet
   gui: false
+bridge:
+  engine: pybullet
 ''',
     "layers/__init__.py": "",
     "layers/reflex.py": '''from isonome.core.layers.reflex import ReflexLayer
@@ -109,10 +111,34 @@ def init(name: str) -> None:
 
 
 @app.command()
-def sim() -> None:
+def sim(
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
+    duration: int = typer.Option(60, "--duration", "-d", help="Seconds to run"),
+    bridge: str = typer.Option("mock", "--bridge", "-b", help="Bridge engine"),
+) -> None:
     """Run robot in simulation mode."""
-    typer.echo("Starting simulation... (stub)")
-    # TODO: load config, create SimBridge, run Agent
+    import asyncio
+
+    from isonome.core.app import IsonomeApp
+    from isonome.core.config import AppConfig, BridgeConfig
+
+    if not config.exists():
+        typer.echo(f"Config not found: {config}", err=True)
+        raise typer.Exit(1)
+
+    app_cfg = AppConfig.from_yaml(config)
+    app_cfg.bridge = BridgeConfig(engine=bridge)
+
+    typer.echo(f"Starting simulation with {bridge} bridge...")
+    isonome_app = IsonomeApp(app_cfg)
+
+    async def _run() -> None:
+        await isonome_app.run(duration_s=float(duration))
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        typer.echo("\nSimulation interrupted.")
 
 
 @app.command()

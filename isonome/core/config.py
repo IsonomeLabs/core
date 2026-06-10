@@ -42,6 +42,13 @@ class SafetyConfig(BaseModel):
     sim_validation_ticks: int = 100
 
 
+class BridgeConfig(BaseModel):
+    """Body bridge selection — connects SomaLayer to a sim or hw backend."""
+
+    engine: Literal["none", "mock", "pybullet", "mujoco", "hardware", "isaac"] = "none"
+    engine_options: dict = Field(default_factory=dict)
+
+
 class SimConfig(BaseModel):
     engine: Literal["pybullet", "godot"] = "pybullet"
     timestep: float = 1.0 / 240.0
@@ -58,6 +65,7 @@ class AppConfig(BaseModel):
     plasticity: PlasticityConfig = Field(default_factory=PlasticityConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     sim: SimConfig = Field(default_factory=SimConfig)
+    bridge: BridgeConfig = Field(default_factory=BridgeConfig)
     preset: str | None = None
     layers_dir: str = "layers"
 

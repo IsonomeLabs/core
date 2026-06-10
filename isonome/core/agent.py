@@ -16,6 +16,7 @@ from pathlib import Path
 import time
 from typing import Optional
 
+from isonome.bridge.factory import build_body_bridge
 from isonome.core.config import AppConfig
 from isonome.core.safety import AgentMode, EmergencyStop, SafetyGovernor
 from isonome.core.state import (
@@ -43,10 +44,14 @@ class Agent:
         self._logger = get_layer_logger(f"agent.{config.agent_name}")
         self._mode = AgentMode.BOOT
 
+        # Body bridge — the integration point between core and sim/hardware
+        self._body_bridge = build_body_bridge(config)
+
         # Core layers
         self.soma = SomaLayer(
             urdf_path=Path(config.soma.urdf_path),
             frequency_hz=config.reflex.frequency_hz,
+            body_bridge=self._body_bridge,
         )
         self.jepa = JEPALayer(
             frequency_hz=config.jepa.frequency_hz,
@@ -145,7 +150,9 @@ class Agent:
         self.cortex.buffer.add(canonical_chunk, execution_result, raw_state)
 
     async def _async_perceive(self) -> RawSensorState:
-        """Async wrapper around soma.perceive()."""
+        """Async wrapper around soma.perceive() or the body bridge."""
+        if self._body_bridge is not None and self._body_bridge.is_connected:
+            return await self._body_bridge.perceive()
         return self.soma.perceive()
 
     def _naive_map(self, canonical_chunk: CanonicalActionChunk) -> CorrectedMotorCommand:
@@ -157,19 +164,24 @@ class Agent:
         )
 
     async def _async_act(self, safe_commands: list) -> None:
-        """Async wrapper around soma.act()."""
-        if safe_commands:
-            # For now, execute the first command in the interpolated chunk
-            # In a real system, this would stream at control frequency
-            self.soma.act(
-                CorrectedMotorCommand(
-                    commands=safe_commands[0].command.unsqueeze(0),
-                    robot_hash=self.soma._robot_hash(),
-                )
-            )
+        """Async wrapper around soma.act() or the body bridge."""
+        if not safe_commands:
+            return
+        # For now, execute the first command in the interpolated chunk.
+        # In a real system, this would stream at control frequency.
+        cmd = CorrectedMotorCommand(
+            commands=safe_commands[0].command.unsqueeze(0),
+            robot_hash=self.soma._robot_hash(),
+        )
+        if self._body_bridge is not None and self._body_bridge.is_connected:
+            await self._body_bridge.act(cmd)
+        else:
+            self.soma.act(cmd)
 
     async def _async_observe_result(self) -> ExecutionResult:
-        """Async wrapper around soma.observe_result()."""
+        """Async wrapper around soma.observe_result() or the body bridge."""
+        if self._body_bridge is not None and self._body_bridge.is_connected:
+            return await self._body_bridge.observe_result()
         return self.soma.observe_result()
 
     async def run(self, duration_s: float | None = None) -> None:

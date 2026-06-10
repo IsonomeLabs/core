@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 from typing import Any
-from isonome.core.state import SensorState, MotorCommand, JointReading, IMUReading
+from isonome.core.state import SensorState, LegacyMotorCommand, JointReading, IMUReading
 from isonome.core.config import SimConfig
 
 
@@ -95,7 +95,7 @@ class SimBridge:
             extras={"base_position": pos, "base_orientation": orn},
         )
 
-    def apply_motor_command(self, cmd: MotorCommand) -> None:
+    def apply_motor_command(self, cmd: LegacyMotorCommand) -> None:
         """Apply a MotorCommand to the simulated robot joints."""
         import pybullet
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
-from isonome.core.state import SensorState, MotorCommand
+from isonome.core.state import SensorState, LegacyMotorCommand
 
 
 class HardwareBridge(ABC):
@@ -21,7 +21,7 @@ class HardwareBridge(ABC):
         ...
 
     @abstractmethod
-    async def write_motors(self, cmd: MotorCommand) -> None:
+    async def write_motors(self, cmd: LegacyMotorCommand) -> None:
         """Send motor commands to hardware."""
         ...
 
@@ -40,7 +40,7 @@ class StubHardwareBridge(HardwareBridge):
     async def read_sensors(self) -> SensorState:
         return SensorState()
 
-    async def write_motors(self, cmd: MotorCommand) -> None:
+    async def write_motors(self, cmd: LegacyMotorCommand) -> None:
         pass
 
     async def disconnect(self) -> None:

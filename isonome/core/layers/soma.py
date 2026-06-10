@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 
 from isonome.core.layers.base import LayerBase
+from isonome.core.ports.body_bridge import BodyBridge
 from isonome.core.state import (
     CanonicalActionChunk,
     CorrectedMotorCommand,
@@ -101,6 +102,10 @@ class SomaLayer(LayerBase):
     - perceive() returns RAW sensor state. No correction applied.
     - act() executes corrected motor commands.
     - load_kernel() injects a calibrated kernel for this body.
+
+    When ``body_bridge`` is provided, all runtime I/O is delegated to the
+    bridge.  Otherwise the layer returns zero-filled stub data, which is
+    useful for testing kernel logic without a physics backend.
     """
 
     def __init__(
@@ -108,13 +113,19 @@ class SomaLayer(LayerBase):
         urdf_path: Path,
         frequency_hz: float = 100.0,
         canonical_dim: int = CANONICAL_DIM,
+        body_bridge: BodyBridge | None = None,
     ) -> None:
         super().__init__(name="soma", frequency_hz=frequency_hz)
         self.urdf_path = Path(urdf_path)
         self.naive_mapper = NaiveMapper(self.urdf_path)
         self._canonical_dim = canonical_dim
         self._kernel: Optional[SomaKernel] = None
+        self._body_bridge = body_bridge
         self._logger = get_layer_logger("soma")
+
+    @property
+    def body_bridge(self) -> BodyBridge | None:
+        return self._body_bridge
 
     @property
     def has_calibrated_kernel(self) -> bool:
@@ -170,21 +181,37 @@ class SomaLayer(LayerBase):
             "soma_layer_booting",
             extra={"urdf": str(self.urdf_path), "joints": self.naive_mapper.joint_count},
         )
+        if self._body_bridge is not None:
+            await self._body_bridge.boot()
+            bridge_joints = self._body_bridge.joint_count
+            urdf_joints = self.naive_mapper.joint_count
+            if bridge_joints != urdf_joints:
+                self._logger.warning(
+                    "soma_bridge_joint_mismatch",
+                    extra={
+                        "urdf_joints": urdf_joints,
+                        "bridge_joints": bridge_joints,
+                    },
+                )
 
     async def on_tick(self) -> None:
         pass  # tick logic driven externally by agent.py
 
     async def on_shutdown(self) -> None:
         self._logger.info("soma_layer_shutdown")
+        if self._body_bridge is not None:
+            await self._body_bridge.shutdown()
 
     def perceive(self) -> RawSensorState:
         """Read RAW sensor state from the body.
 
         Returns uncorrected proprioception and camera frames. This is RAW data.
         Never apply post-processing or kernel correction here.
+
+        Note: when a ``BodyBridge`` is connected, ``Agent._async_perceive``
+        calls the bridge's async ``perceive()`` directly instead of this
+        method.  This sync fallback exists for testing and subclasses.
         """
-        # Subclasses or bridges override this to read from hardware/sim.
-        # Default: return zero-filled RAW state.
         joint_count = self.naive_mapper.joint_count
         return RawSensorState(
             proprioception=torch.zeros(joint_count),
@@ -192,13 +219,19 @@ class SomaLayer(LayerBase):
         )
 
     def act(self, cmd: CorrectedMotorCommand) -> None:
-        """Send corrected motor commands to the physics bridge or hardware."""
-        # Subclasses or bridges override this.
+        """Send corrected motor commands to the physics bridge or hardware.
+
+        Note: when a ``BodyBridge`` is connected, ``Agent._async_act``
+        calls the bridge's async ``act()`` directly.
+        """
         self._logger.debug("soma_act", extra={"shape": list(cmd.commands.shape)})
 
     def observe_result(self) -> ExecutionResult:
-        """Observe the result of the last act() for discrepancy analysis."""
-        # Subclasses or bridges override this.
+        """Observe the result of the last act() for discrepancy analysis.
+
+        Note: when a ``BodyBridge`` is connected, ``Agent._async_observe_result``
+        calls the bridge's async ``observe_result()`` directly.
+        """
         joint_count = self.naive_mapper.joint_count
         return ExecutionResult(
             final_proprioception=torch.zeros(joint_count),

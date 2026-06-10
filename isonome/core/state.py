@@ -187,6 +187,19 @@ class MotorCommand(BaseModel):
         return d
 
 
+class LegacyMotorCommand(BaseModel):
+    """Deprecated v0.1 motor command — dict of joint positions.
+
+    Kept for backward compatibility with ``isonome.bridge.sim.SimBridge``
+    and ``isonome.bridge.hardware.HardwareBridge``.
+    """
+
+    joint_positions: dict[str, float] = Field(default_factory=dict)
+    joint_velocities: dict[str, float] = Field(default_factory=dict)
+    joint_efforts: dict[str, float] = Field(default_factory=dict)
+    emergency_stop: bool = False
+
+
 class SafeMotorCommand(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     """Motor command after safety enforcement."""
