@@ -15,11 +15,17 @@
 
 ---
 
-## 2. Missing FSM Compiler & Action Merger
+## 2. Missing FSM Compiler & Action Merger ✅ CLOSED
 
 **Architecture shows:** Chamber 3 has an **FSM Compiler** (Guards / Events / Merge Strategy) and an **Action Merger** (Priority | Weighted Average | Nullspace).
 
-**Reality:** Nothing like this exists in `core/`. `Agent.tick()` runs a single linear pipeline for one body. There is no finite-state machine, no multi-agent composition, no merge strategy, and no coordinator.
+**Reality:** ✅ Implemented in `isonome/core/coordination/`.
+- `FSMCompiler` / `FSMExecutor` — builder + runtime engine with guards, events, entry/exit/during actions.
+- `ActionMerger` with three strategies: `PriorityMerger`, `WeightedAverageMerger`, `NullspaceMerger`.
+- `Coordinator` — multi-agent composition layer that runs sub-agent ticks, collects `PartialAction`s, merges them into `FullAction`, and executes via a body bridge.
+- `SomaLayer._last_command` caching so the coordinator can read each agent's output.
+- `CoordinationConfig` added to `AppConfig`.
+- 33 tests covering FSM, all three merge strategies, and coordinator integration.
 
 ---
 

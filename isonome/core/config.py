@@ -56,6 +56,14 @@ class SimConfig(BaseModel):
     gui: bool = False
 
 
+class CoordinationConfig(BaseModel):
+    """Chamber 3 coordination engine config."""
+
+    enabled: bool = False
+    strategy: Literal["priority", "weighted_average", "nullspace"] = "priority"
+    frequency_hz: float = 200.0
+
+
 class AppConfig(BaseModel):
     agent_name: str = "isonome_agent"
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
@@ -66,6 +74,7 @@ class AppConfig(BaseModel):
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     sim: SimConfig = Field(default_factory=SimConfig)
     bridge: BridgeConfig = Field(default_factory=BridgeConfig)
+    coordination: CoordinationConfig = Field(default_factory=CoordinationConfig)
     preset: str | None = None
     layers_dir: str = "layers"
 

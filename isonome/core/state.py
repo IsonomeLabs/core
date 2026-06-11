@@ -220,6 +220,82 @@ class SafeMotorCommand(BaseModel):
         
         
 # ---------------------------------------------------------------------------
+# Coordination Models — Chamber 3: FSM + Action Merger
+# ---------------------------------------------------------------------------
+
+class MergeStrategy(str, Enum):
+    """Strategy used by ActionMerger to combine partial actions."""
+
+    PRIORITY = "priority"
+    WEIGHTED_AVERAGE = "weighted_average"
+    NULLSPACE = "nullspace"
+
+
+class PartialAction(BaseModel):
+    """Action contribution from a single agent / subsystem.
+
+    ``dof_slice`` maps this agent's command tensor into the full robot's
+    joint vector.  For example, ``slice(0, 3)`` means this agent controls
+    the first three DOFs.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    agent_id: str
+    commands: torch.Tensor  # shape: [..., agent_dof]
+    dof_slice: slice = slice(0, 0)  # maps into full robot command vector
+    priority: int = 0  # higher = more important (for PRIORITY strategy)
+    weight: float = 1.0  # blend weight (for WEIGHTED_AVERAGE strategy)
+    active: bool = True
+
+    @field_validator("commands", mode="before")
+    @classmethod
+    def _validate_tensor(cls, v: Any) -> torch.Tensor:
+        return torch.as_tensor(v)
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        d = super().model_dump(**kwargs)
+        d["commands"] = self.commands.tolist()
+        # slice is not JSON-serializable by default
+        d["dof_slice"] = [self.dof_slice.start, self.dof_slice.stop, self.dof_slice.step]
+        return d
+
+
+class FullAction(BaseModel):
+    """Merged motor command produced by the ActionMerger."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    commands: torch.Tensor  # shape: [..., total_dof]
+    source_map: dict[str, slice] = Field(default_factory=dict)
+    merged_from: list[str] = Field(default_factory=list)
+    strategy: MergeStrategy = MergeStrategy.PRIORITY
+
+    @field_validator("commands", mode="before")
+    @classmethod
+    def _validate_tensor(cls, v: Any) -> torch.Tensor:
+        return torch.as_tensor(v)
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        d = super().model_dump(**kwargs)
+        d["commands"] = self.commands.tolist()
+        d["source_map"] = {
+            k: [v.start, v.stop, v.step] for k, v in self.source_map.items()
+        }
+        return d
+
+
+class FSMStateSnapshot(BaseModel):
+    """Serializable snapshot of the FSM executor at a point in time."""
+
+    current_state: str
+    previous_state: str | None = None
+    tick_count: int = 0
+    event: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
 # v0.1 Legacy Models (deprecated, kept for backward compatibility)
 # ---------------------------------------------------------------------------
         

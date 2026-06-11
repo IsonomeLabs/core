@@ -124,7 +124,7 @@ class SomaLayer(LayerBase):
         self._body_bridge = body_bridge
         self._morphology_analyzer = MorphologyAnalyzer(self.urdf_path)
         self._logger = get_layer_logger("soma")
-        
+        self._last_command: torch.Tensor | None = None
     @property
     def body_bridge(self) -> BodyBridge | None:
         return self._body_bridge
@@ -240,7 +240,8 @@ class SomaLayer(LayerBase):
         calls the bridge's async ``act()`` directly.
         """
         self._logger.debug("soma_act", extra={"shape": list(cmd.commands.shape)})
-        
+        self._last_command = cmd.commands.detach().clone()
+
     def observe_result(self) -> ExecutionResult:
         """Observe the result of the last act() for discrepancy analysis.
         
