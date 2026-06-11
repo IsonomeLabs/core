@@ -9,6 +9,14 @@ from __future__ import annotations
 from isonome.core.config import AppConfig
 from isonome.core.safety import AgentMode
 
+# CalibrationCache — no torch dependency (pure dataclass/dict)
+from isonome.core.calibration_cache import (
+    CalibrationCache,
+    CalibrationCacheEntry,
+    CalibrationCacheKey,
+    CalibrationCacheStats,
+)
+
 # Torch-dependent state model names — imported lazily via __getattr__
 _STATE_NAMES = frozenset({
     "RawSensorState", "CanonicalActionChunk", "CorrectedMotorCommand",
@@ -42,4 +50,6 @@ __all__ = [
     "Patch", "PatchType", "ErrorEvent", "JointReading",
     "ContactReading", "IMUReading", "PredictedState",
     "AppConfig", "AgentMode", "Agent", "IsonomeApp",
+    "CalibrationCache", "CalibrationCacheKey",
+    "CalibrationCacheEntry", "CalibrationCacheStats",
 ]
