@@ -21,6 +21,7 @@ from isonome.core.state import (
     RawSensorState,
 )
 from isonome.utils.logging import get_layer_logger
+from isonome.utils.morphology import BaseMorphology, MorphologyAnalyzer, TopologyVector
 
 
 CANONICAL_DIM = 14
@@ -28,7 +29,7 @@ CANONICAL_DIM = 14
 
 class NaiveMapper:
     """Initial guess mapping from canonical action space to robot DOF."""
-
+    
     def __init__(self, urdf_path: Path) -> None:
         self.urdf_path = urdf_path
         self.joint_count = self._parse_urdf_actuated_joints(urdf_path)
@@ -38,7 +39,7 @@ class NaiveMapper:
             "naive_mapper_init",
             extra={"joints": self.joint_count, "canonical_dim": CANONICAL_DIM},
         )
-
+        
     def _parse_urdf_actuated_joints(self, urdf_path: Path) -> int:
         tree = ET.parse(urdf_path)
         root = tree.getroot()
@@ -48,7 +49,7 @@ class NaiveMapper:
             if jtype != "fixed":
                 count += 1
         return count
-
+        
     def _infer_action_space(self, joint_count: int) -> torch.Tensor:
         """Build initial guess: map canonical 14-DOF to robot's N-DOF."""
         if joint_count < CANONICAL_DIM:
@@ -68,21 +69,21 @@ class NaiveMapper:
             return mapping
         else:
             return torch.eye(CANONICAL_DIM)
-
+            
     def map(self, canonical: torch.Tensor) -> torch.Tensor:
         """Apply initial guess mapping.
-
+        
         canonical: tensor of shape [..., CANONICAL_DIM]
         returns: tensor of shape [..., joint_count]
         """
         device = canonical.device
         matrix = self.action_space.to(device)
         return torch.matmul(canonical, matrix)
-
-
+        
+        
 class SomaKernel(nn.Module):
     """Learned residual network that corrects naive mapping for a specific body."""
-
+    
     def __init__(self, canonical_dim: int, robot_state_dim: int) -> None:
         super().__init__()
         self.net = nn.Sequential(
@@ -90,24 +91,24 @@ class SomaKernel(nn.Module):
             nn.ReLU(),
             nn.Linear(64, canonical_dim),
         )
-
+        
     def forward(self, canonical_action: torch.Tensor, raw_state: torch.Tensor) -> torch.Tensor:
         x = torch.cat([canonical_action, raw_state], dim=-1)
         return self.net(x)
-
-
+        
+        
 class SomaLayer(LayerBase):
     """Body interface layer.
-
+    
     - perceive() returns RAW sensor state. No correction applied.
     - act() executes corrected motor commands.
     - load_kernel() injects a calibrated kernel for this body.
-
+    
     When ``body_bridge`` is provided, all runtime I/O is delegated to the
     bridge.  Otherwise the layer returns zero-filled stub data, which is
     useful for testing kernel logic without a physics backend.
     """
-
+    
     def __init__(
         self,
         urdf_path: Path,
@@ -121,20 +122,31 @@ class SomaLayer(LayerBase):
         self._canonical_dim = canonical_dim
         self._kernel: Optional[SomaKernel] = None
         self._body_bridge = body_bridge
+        self._morphology_analyzer = MorphologyAnalyzer(self.urdf_path)
         self._logger = get_layer_logger("soma")
-
+        
     @property
     def body_bridge(self) -> BodyBridge | None:
         return self._body_bridge
-
+        
     @property
     def has_calibrated_kernel(self) -> bool:
         return self._kernel is not None
-
+        
     @property
     def kernel(self) -> Optional[SomaKernel]:
         return self._kernel
 
+    @property
+    def morphology(self) -> BaseMorphology:
+        """Parsed morphology features from the URDF."""
+        return self._morphology_analyzer.base_morphology
+
+    @property
+    def topology_vector(self) -> TopologyVector:
+        """32-D topology vector and SHA-256 topology hash."""
+        return self._morphology_analyzer.topology_vector
+        
     def load_kernel(self, weights_path: Path) -> None:
         """Load a pre-trained kernel from disk."""
         self._logger.info("soma_loading_kernel", extra={"path": str(weights_path)})
@@ -150,7 +162,7 @@ class SomaLayer(LayerBase):
         for param in self._kernel.parameters():
             param.requires_grad = False
         self._logger.info("soma_kernel_loaded")
-
+        
     def apply_kernel(
         self, canonical_chunk: CanonicalActionChunk, raw_state: RawSensorState
     ) -> CorrectedMotorCommand:
@@ -169,13 +181,16 @@ class SomaLayer(LayerBase):
             commands=corrected,
             robot_hash=self._robot_hash(),
         )
-
+        
     def _robot_hash(self) -> str:
-        import hashlib
+        """Topology-aware hash based on morphology features, not raw file bytes.
 
-        content = self.urdf_path.read_bytes()
-        return hashlib.sha256(content).hexdigest()[:16]
-
+        This replaces the previous sha256(urdf_bytes)[:16] with a hash derived
+        from the 32-D topology vector, ensuring the hash captures semantic
+        morphology rather than incidental file formatting.
+        """
+        return self._morphology_analyzer.topology_vector.topology_hash[:16]
+        
     async def on_boot(self) -> None:
         self._logger.info(
             "soma_layer_booting",
@@ -193,21 +208,21 @@ class SomaLayer(LayerBase):
                         "bridge_joints": bridge_joints,
                     },
                 )
-
+                
     async def on_tick(self) -> None:
         pass  # tick logic driven externally by agent.py
-
+        
     async def on_shutdown(self) -> None:
         self._logger.info("soma_layer_shutdown")
         if self._body_bridge is not None:
             await self._body_bridge.shutdown()
-
+            
     def perceive(self) -> RawSensorState:
         """Read RAW sensor state from the body.
-
+        
         Returns uncorrected proprioception and camera frames. This is RAW data.
         Never apply post-processing or kernel correction here.
-
+        
         Note: when a ``BodyBridge`` is connected, ``Agent._async_perceive``
         calls the bridge's async ``perceive()`` directly instead of this
         method.  This sync fallback exists for testing and subclasses.
@@ -217,18 +232,18 @@ class SomaLayer(LayerBase):
             proprioception=torch.zeros(joint_count),
             camera_frames=[],
         )
-
+        
     def act(self, cmd: CorrectedMotorCommand) -> None:
         """Send corrected motor commands to the physics bridge or hardware.
-
+        
         Note: when a ``BodyBridge`` is connected, ``Agent._async_act``
         calls the bridge's async ``act()`` directly.
         """
         self._logger.debug("soma_act", extra={"shape": list(cmd.commands.shape)})
-
+        
     def observe_result(self) -> ExecutionResult:
         """Observe the result of the last act() for discrepancy analysis.
-
+        
         Note: when a ``BodyBridge`` is connected, ``Agent._async_observe_result``
         calls the bridge's async ``observe_result()`` directly.
         """
@@ -238,3 +253,4 @@ class SomaLayer(LayerBase):
             success=True,
             error_metric=0.0,
         )
+        
