@@ -5,13 +5,17 @@
 
 ---
 
-## 1. Core → Sim Bridge Gap (Biggest Disconnect)
+## 1. Core → Sim Bridge Gap (Biggest Disconnect) ✅ CLOSED
 
 **Architecture says:** `SomaLayer` loads URDF via `SimBridge` (PyBullet) **or** `HardwareBridge`, and `perceive()` / `act()` read from / write to that bridge.
 
-**Reality:** `SomaLayer` **never connects to any bridge**. It parses the URDF file with `xml.etree` to count joints, then `perceive()` returns zero-filled tensors and `act()` is a no-op logger call. The `SimBridge` in `isonome/bridge/sim.py` is a standalone PyBullet wrapper that nothing in `core` imports or uses. Same for `HardwareBridge` — `Agent` and `SomaLayer` don't know it exists.
+**Reality:** ✅ Implemented via `BodyBridge` port + adapters.
+- `BodyBridge` abstract port in `isonome/core/ports/body_bridge.py` with async `perceive()` / `act()` / `observe_result()` lifecycle.
+- Concrete adapters in `isonome/bridge/adapters/`: `MockBridgeAdapter`, `PyBulletBridgeAdapter`, `MuJoCoBridgeAdapter`, `HardwareBridgeAdapter`.
+- `Agent` constructs the bridge via `build_body_bridge(config)` and delegates runtime I/O to it in `_async_perceive()`, `_async_act()`, `_async_observe_result()`.
+- `SomaLayer` accepts an optional `body_bridge` and validates joint counts during boot.
 
-**Impact:** There is **no integration point** between the four-layer agent pipeline and any physics engine. The `VLAController` in `sim/vla_controller.py` drives MuJoCo directly, bypassing `Agent`, `SomaLayer`, `ReflexLayer`, and `SafetyGovernor` entirely.
+**Note:** `VLAController` in `sim/vla_controller.py` still drives MuJoCo directly for closed-loop VLA demos, but the main `Agent` pipeline is now bridged.
 
 ---
 
@@ -58,11 +62,16 @@
 
 ---
 
-## 5. Topology / Morphology Analyzer
+## 5. Topology / Morphology Analyzer ✅ CLOSED
 
 **Architecture shows:** Chamber 2 produces a **32-D Topology Vector** and a **SHA256 Topology Hash** based on morphology features (base type, DOF ratios, mass ratios, workspace volume, etc.).
 
-**Reality:** The only "hash" is `SomaLayer._robot_hash()`, which is literally `sha256(urdf_file_bytes)[:16]`. There is no morphology analyzer, no topology vector, and the cache key logic shown in Diagram 1 doesn't exist.
+**Reality:** ✅ Implemented in `isonome/utils/morphology.py` (iteration-028).
+- `MorphologyAnalyzer` parses URDF and extracts `BaseMorphology` features.
+- `TopologyVector` produces the 32-D feature vector and a stable SHA-256 topology hash.
+- `SomaLayer` exposes `morphology` and `topology_vector` properties and `_robot_hash()` now returns `topology_vector.topology_hash[:16]`.
+- `TopologyVectorState` Pydantic model in `isonome/core/state.py` for serialization.
+- 52 tests in `tests/test_morphology_analyzer.py`.
 
 ---
 
@@ -103,18 +112,15 @@
 
 ---
 
-## 10. CLI Stubs
+## 10. CLI Stubs — PARTIALLY CLOSED
 
 **Architecture shows:** `cli.py` with commands `init | sim | run | deploy`.
 
-**Reality:** `sim`, `run`, and `deploy` are all stubs that print a string and do nothing:
-
-```python
-@app.command()
-def sim() -> None:
-    typer.echo("Starting simulation... (stub)")
-    # TODO: load config, create SimBridge, run Agent
-```
+**Reality:**
+- ✅ `init` implemented — scaffolds a robot project with `main.py`, `config.yaml`, layer stubs, and tests.
+- ✅ `sim` implemented — loads config, sets bridge engine, runs `IsonomeApp`.
+- ❌ `run` still a stub (hardware mode).
+- ❌ `deploy` still a stub.
 
 ---
 
@@ -122,14 +128,14 @@ def sim() -> None:
 
 | Architecture Claim | Actual State |
 |---|---|
-| `SomaLayer` drives Sim/HW bridge | No-op; bridges are orphaned |
+| `SomaLayer` drives Sim/HW bridge | ✅ `BodyBridge` adapters + Agent integration |
 | Isaac Lab + MuJoCo MJX backends | Isaac Sim remote server + CPU MuJoCo |
-| FSM Compiler + Action Merger | ❌ Missing entirely |
-| 32-D Topology Vector + Morphology Hash | Raw URDF file SHA256 only |
-| Calibration Cache (topology+task+vla) | Generic string TTL cache |
+| FSM Compiler + Action Merger | ✅ Implemented in `isonome/core/coordination/` |
+| 32-D Topology Vector + Morphology Hash | ✅ `isonome/utils/morphology.py` |
+| Calibration Cache (topology+task+vla) | Generic string TTL cache — **next gap** |
 | CMA-ES / 256 envs / Auto-Adjustment | ❌ Missing entirely |
 | Certified Policy Package (.zip) export | ❌ Missing entirely |
 | ROS2 topic topology | ❌ Missing entirely |
 | Reflex @ 1 kHz dedicated thread | Python asyncio ~100 Hz |
 | VLA inference contexts + ring buffers | Single policy, no buffers |
-| `sim` / `run` / `deploy` CLI | Stubs |
+| `sim` / `run` / `deploy` CLI | `sim` ✅; `run`/`deploy` stubs |
