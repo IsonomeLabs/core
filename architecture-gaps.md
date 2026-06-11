@@ -12,7 +12,7 @@
 **Reality:** ✅ Implemented via `BodyBridge` port + adapters.
 - `BodyBridge` abstract port in `isonome/core/ports/body_bridge.py` with async `perceive()` / `act()` / `observe_result()` lifecycle.
 - Concrete adapters in `isonome/bridge/adapters/`: `MockBridgeAdapter`, `PyBulletBridgeAdapter`, `MuJoCoBridgeAdapter`, `HardwareBridgeAdapter`.
-- `Agent` constructs the bridge via `build_body_bridge(config)` and delegates runtime I/O to it in `_async_perceive()`, `_async_act()`, `_async_observe_result()`.
+- `Agent` constructs the bridge via `build_body_bridge(config)` and delegates runtime I/O to it.
 - `SomaLayer` accepts an optional `body_bridge` and validates joint counts during boot.
 
 **Note:** `VLAController` in `sim/vla_controller.py` still drives MuJoCo directly for closed-loop VLA demos, but the main `Agent` pipeline is now bridged.
@@ -69,17 +69,21 @@
 **Reality:** ✅ Implemented in `isonome/utils/morphology.py` (iteration-028).
 - `MorphologyAnalyzer` parses URDF and extracts `BaseMorphology` features.
 - `TopologyVector` produces the 32-D feature vector and a stable SHA-256 topology hash.
-- `SomaLayer` exposes `morphology` and `topology_vector` properties and `_robot_hash()` now returns `topology_vector.topology_hash[:16]`.
+- `SomaLayer` exposes `morphology` and `topology_vector` properties; `_robot_hash()` returns `topology_vector.topology_hash[:16]`.
 - `TopologyVectorState` Pydantic model in `isonome/core/state.py` for serialization.
 - 52 tests in `tests/test_morphology_analyzer.py`.
 
 ---
 
-## 6. Calibration Cache vs. LLM Cache
+## 6. Calibration Cache vs. LLM Cache — PARTIALLY CLOSED
 
 **Architecture shows:** A `Calibration Cache` keyed by `SHA256(topology + task_type + vla_version)` that stores certified policy packages.
 
-**Reality:** `llm/cache.py` implements a generic `SemanticCache` — a simple dict with TTL eviction for Cortex advice strings. It has nothing to do with topology hashes, task types, VLA versions, or policy packages.
+**Reality:** Two implementations now exist:
+- `isonome/core/calibration_cache.py` — in-memory `CalibrationCache` with `CalibrationCacheKey`, `CalibrationCacheEntry`, `CalibrationCacheStats`, certification filtering, and `to_dict()`/`from_dict()` serialization.
+- `isonome/praxis/calibration_cache.py` — on-disk `CalibrationCache` with `CacheKey`, `CertifiedPolicyPackage`, public/private namespaces, topology-vector near-match search (L2), and CLI commands (`cache put`, `cache lookup`, `cache list`).
+
+**Gap remaining:** The two implementations are not yet unified. The core module lacks on-disk persistence and near-match search; the praxis module lacks stats tracking and certification filtering. A future iteration should merge them into a single cache that supports both in-memory hot-path and on-disk persistence with near-match.
 
 ---
 
@@ -119,6 +123,7 @@
 **Reality:**
 - ✅ `init` implemented — scaffolds a robot project with `main.py`, `config.yaml`, layer stubs, and tests.
 - ✅ `sim` implemented — loads config, sets bridge engine, runs `IsonomeApp`.
+- ✅ `cache` subcommands added — `put`, `lookup`, `list` for calibration cache management.
 - ❌ `run` still a stub (hardware mode).
 - ❌ `deploy` still a stub.
 
@@ -132,10 +137,10 @@
 | Isaac Lab + MuJoCo MJX backends | Isaac Sim remote server + CPU MuJoCo |
 | FSM Compiler + Action Merger | ✅ Implemented in `isonome/core/coordination/` |
 | 32-D Topology Vector + Morphology Hash | ✅ `isonome/utils/morphology.py` |
-| Calibration Cache (topology+task+vla) | Generic string TTL cache — **next gap** |
+| Calibration Cache (topology+task+vla) | Core + Praxis implementations (unification pending) |
 | CMA-ES / 256 envs / Auto-Adjustment | ❌ Missing entirely |
 | Certified Policy Package (.zip) export | ❌ Missing entirely |
 | ROS2 topic topology | ❌ Missing entirely |
 | Reflex @ 1 kHz dedicated thread | Python asyncio ~100 Hz |
 | VLA inference contexts + ring buffers | Single policy, no buffers |
-| `sim` / `run` / `deploy` CLI | `sim` ✅; `run`/`deploy` stubs |
+| `sim` / `run` / `deploy` CLI | `sim` ✅; `cache` ✅; `run`/`deploy` stubs |

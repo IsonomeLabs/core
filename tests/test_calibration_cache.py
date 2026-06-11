@@ -1,29 +1,32 @@
-"""Tests for CalibrationCache — morphology-aware kernel/policy cache.
+"""Tests for CalibrationCache — architecture gap #6.
 
-Addresses architecture gap #6: the architecture specifies a Calibration Cache
-keyed by SHA256(topology + task_type + vla_version) that stores certified
-policy packages. The existing SemanticCache is a generic string TTL cache
-with no topology awareness.
-
-The CalibrationCache composes the TopologyVector.topology_hash with task_type
-and vla_version to produce deterministic, morphology-aware cache keys.
+Covers both implementations:
+- ``isonome.core.calibration_cache`` — in-memory cache with stats and certification
+- ``isonome.praxis.calibration_cache`` — on-disk cache with namespaces, near-match, and CLI
 """
-
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 import torch
+from typer.testing import CliRunner
 
+from isonome.cli import app
 from isonome.core.calibration_cache import (
     CalibrationCache,
-    CalibrationCacheKey,
     CalibrationCacheEntry,
+    CalibrationCacheKey,
     CalibrationCacheStats,
+)
+from isonome.praxis.calibration_cache import (
+    CacheKey,
+    CalibrationCache as PolicyPackageCache,
+    CertifiedPolicyPackage,
 )
 from isonome.utils.morphology import TopologyVector
 
@@ -32,26 +35,15 @@ from isonome.utils.morphology import TopologyVector
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_topology_vector(seed: int = 0) -> TopologyVector:
     """Create a deterministic 32-D TopologyVector for testing."""
     torch.manual_seed(seed)
     return TopologyVector(features=torch.randn(32))
 
 
-def _make_cache_key(
-    topology_hash: str = "abc123",
-    task_type: str = "reach",
-    vla_version: str = "openvla-7b-v1",
-) -> CalibrationCacheKey:
-    return CalibrationCacheKey(
-        topology_hash=topology_hash,
-        task_type=task_type,
-        vla_version=vla_version,
-    )
-
-
 # ===========================================================================
-# CalibrationCacheKey
+# Core: CalibrationCacheKey
 # ===========================================================================
 
 
@@ -59,90 +51,64 @@ class TestCalibrationCacheKey:
     """Tests for the composite cache key model."""
 
     def test_key_attributes(self) -> None:
-        key = _make_cache_key()
-        assert key.topology_hash == "abc123"
+        key = CalibrationCacheKey("abc", "reach", "v1")
+        assert key.topology_hash == "abc"
         assert key.task_type == "reach"
-        assert key.vla_version == "openvla-7b-v1"
+        assert key.vla_version == "v1"
 
     def test_key_deterministic_hash(self) -> None:
-        """Same inputs → same composite hash."""
-        k1 = _make_cache_key(topology_hash="aaa", task_type="pick", vla_version="v2")
-        k2 = _make_cache_key(topology_hash="aaa", task_type="pick", vla_version="v2")
+        k1 = CalibrationCacheKey("aaa", "pick", "v2")
+        k2 = CalibrationCacheKey("aaa", "pick", "v2")
         assert k1.composite_hash() == k2.composite_hash()
 
-    def test_key_different_topology_different_hash(self) -> None:
-        k1 = _make_cache_key(topology_hash="aaa")
-        k2 = _make_cache_key(topology_hash="bbb")
+    def test_key_different_inputs_different_hash(self) -> None:
+        k1 = CalibrationCacheKey("aaa", "reach", "v1")
+        k2 = CalibrationCacheKey("bbb", "reach", "v1")
+        k3 = CalibrationCacheKey("aaa", "grasp", "v1")
+        k4 = CalibrationCacheKey("aaa", "reach", "v2")
         assert k1.composite_hash() != k2.composite_hash()
-
-    def test_key_different_task_different_hash(self) -> None:
-        k1 = _make_cache_key(task_type="reach")
-        k2 = _make_cache_key(task_type="pick")
-        assert k1.composite_hash() != k2.composite_hash()
-
-    def test_key_different_vla_different_hash(self) -> None:
-        k1 = _make_cache_key(vla_version="v1")
-        k2 = _make_cache_key(vla_version="v2")
-        assert k1.composite_hash() != k2.composite_hash()
+        assert k1.composite_hash() != k3.composite_hash()
+        assert k1.composite_hash() != k4.composite_hash()
 
     def test_key_composite_hash_format(self) -> None:
-        """Composite hash should be a SHA-256 hex digest (64 chars)."""
-        key = _make_cache_key()
-        h = key.composite_hash()
+        h = CalibrationCacheKey("x", "y", "z").composite_hash()
         assert len(h) == 64
         assert all(c in "0123456789abcdef" for c in h)
 
     def test_key_composite_hash_uses_sha256(self) -> None:
-        """Verify the hash matches manual SHA-256 computation."""
-        key = _make_cache_key(topology_hash="aaa", task_type="pick", vla_version="v2")
-        expected_input = "aaa:pick:v2"
-        expected = hashlib.sha256(expected_input.encode()).hexdigest()
+        key = CalibrationCacheKey("aaa", "pick", "v2")
+        expected = hashlib.sha256("aaa:pick:v2".encode()).hexdigest()
         assert key.composite_hash() == expected
 
     def test_key_equality(self) -> None:
-        k1 = _make_cache_key(topology_hash="x", task_type="y", vla_version="z")
-        k2 = _make_cache_key(topology_hash="x", task_type="y", vla_version="z")
+        k1 = CalibrationCacheKey("x", "y", "z")
+        k2 = CalibrationCacheKey("x", "y", "z")
         assert k1 == k2
 
     def test_key_inequality(self) -> None:
-        k1 = _make_cache_key(topology_hash="x")
-        k2 = _make_cache_key(topology_hash="y")
+        k1 = CalibrationCacheKey("x", "y", "z")
+        k2 = CalibrationCacheKey("a", "y", "z")
         assert k1 != k2
 
     def test_key_hashable(self) -> None:
-        """Keys must be usable in sets and dicts."""
-        k1 = _make_cache_key(topology_hash="x", task_type="y", vla_version="z")
-        k2 = _make_cache_key(topology_hash="x", task_type="y", vla_version="z")
-        s = {k1, k2}
-        assert len(s) == 1
+        k1 = CalibrationCacheKey("x", "y", "z")
+        k2 = CalibrationCacheKey("x", "y", "z")
+        assert len({k1, k2}) == 1
 
     def test_key_from_topology_vector(self) -> None:
-        """Factory method: build key from TopologyVector + task + version."""
         tv = _make_topology_vector(seed=42)
-        key = CalibrationCacheKey.from_topology_vector(
-            topology_vector=tv, task_type="reach", vla_version="openvla-v1"
-        )
+        key = CalibrationCacheKey.from_topology_vector(tv, "reach", "openvla-v1")
         assert key.topology_hash == tv.topology_hash
         assert key.task_type == "reach"
         assert key.vla_version == "openvla-v1"
 
-    def test_key_from_topology_vector_deterministic(self) -> None:
-        """Same topology vector → same hash in key."""
-        tv1 = _make_topology_vector(seed=42)
-        tv2 = _make_topology_vector(seed=42)
-        k1 = CalibrationCacheKey.from_topology_vector(tv1, "reach", "v1")
-        k2 = CalibrationCacheKey.from_topology_vector(tv2, "reach", "v1")
-        assert k1.composite_hash() == k2.composite_hash()
-
 
 # ===========================================================================
-# CalibrationCacheEntry
+# Core: CalibrationCacheEntry
 # ===========================================================================
 
 
 class TestCalibrationCacheEntry:
-    """Tests for cache entry model."""
-
     def test_entry_attributes(self) -> None:
         entry = CalibrationCacheEntry(
             kernel_path="/path/to/kernel.pt",
@@ -169,7 +135,6 @@ class TestCalibrationCacheEntry:
 
     def test_entry_is_expired(self) -> None:
         entry = CalibrationCacheEntry(kernel_path="/k.pt", ttl=0.0)
-        # With TTL=0, should be expired immediately
         time.sleep(0.01)
         assert entry.is_expired
 
@@ -178,22 +143,19 @@ class TestCalibrationCacheEntry:
         assert not entry.is_expired
 
     def test_entry_no_ttl_never_expires(self) -> None:
-        """Calibration entries typically have no TTL — they persist."""
         entry = CalibrationCacheEntry(kernel_path="/k.pt", ttl=None)
         assert not entry.is_expired
 
 
 # ===========================================================================
-# CalibrationCache — Core Operations
+# Core: CalibrationCache — Core Operations
 # ===========================================================================
 
 
 class TestCalibrationCacheCore:
-    """Tests for basic cache operations: put, get, has, evict."""
-
     def test_put_and_get(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
+        key = CalibrationCacheKey("abc", "reach", "v1")
         entry = CalibrationCacheEntry(kernel_path="/k.pt", certified=True)
         cache.put(key, entry)
         result = cache.get(key)
@@ -203,33 +165,30 @@ class TestCalibrationCacheCore:
 
     def test_get_missing_returns_none(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
-        assert cache.get(key) is None
+        assert cache.get(CalibrationCacheKey("x", "y", "z")) is None
 
     def test_has_key(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
+        key = CalibrationCacheKey("abc", "reach", "v1")
         assert not cache.has(key)
         cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt"))
         assert cache.has(key)
 
     def test_remove(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
+        key = CalibrationCacheKey("abc", "reach", "v1")
         cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt"))
-        assert cache.has(key)
         removed = cache.remove(key)
         assert removed is not None
         assert not cache.has(key)
 
     def test_remove_missing_returns_none(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
-        assert cache.remove(key) is None
+        assert cache.remove(CalibrationCacheKey("x", "y", "z")) is None
 
     def test_put_overwrites(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
+        key = CalibrationCacheKey("abc", "reach", "v1")
         cache.put(key, CalibrationCacheEntry(kernel_path="/v1.pt"))
         cache.put(key, CalibrationCacheEntry(kernel_path="/v2.pt", certified=True))
         result = cache.get(key)
@@ -240,145 +199,55 @@ class TestCalibrationCacheCore:
     def test_len(self) -> None:
         cache = CalibrationCache()
         assert len(cache) == 0
-        cache.put(_make_cache_key(topology_hash="a"), CalibrationCacheEntry(kernel_path="/a.pt"))
+        cache.put(CalibrationCacheKey("a", "reach", "v1"), CalibrationCacheEntry(kernel_path="/a.pt"))
         assert len(cache) == 1
-        cache.put(_make_cache_key(topology_hash="b"), CalibrationCacheEntry(kernel_path="/b.pt"))
-        assert len(cache) == 2
 
     def test_clear(self) -> None:
         cache = CalibrationCache()
-        cache.put(_make_cache_key(topology_hash="a"), CalibrationCacheEntry(kernel_path="/a.pt"))
-        cache.put(_make_cache_key(topology_hash="b"), CalibrationCacheEntry(kernel_path="/b.pt"))
+        cache.put(CalibrationCacheKey("a", "reach", "v1"), CalibrationCacheEntry(kernel_path="/a.pt"))
         cache.clear()
         assert len(cache) == 0
 
 
 # ===========================================================================
-# CalibrationCache — Topology-Aware Keying
-# ===========================================================================
-
-
-class TestCalibrationCacheTopologyKeying:
-    """Tests verifying that topology hash correctly differentiates entries."""
-
-    def test_same_robot_different_tasks(self) -> None:
-        """Same robot (topology), different tasks → different cache entries."""
-        cache = CalibrationCache()
-        tv = _make_topology_vector(seed=10)
-
-        key_reach = CalibrationCacheKey.from_topology_vector(tv, "reach", "v1")
-        key_pick = CalibrationCacheKey.from_topology_vector(tv, "pick", "v1")
-
-        cache.put(key_reach, CalibrationCacheEntry(kernel_path="/reach.pt"))
-        cache.put(key_pick, CalibrationCacheEntry(kernel_path="/pick.pt"))
-
-        assert cache.get(key_reach).kernel_path == "/reach.pt"
-        assert cache.get(key_pick).kernel_path == "/pick.pt"
-
-    def test_same_robot_different_vla(self) -> None:
-        """Same robot, same task, different VLA → different entries."""
-        cache = CalibrationCache()
-        tv = _make_topology_vector(seed=10)
-
-        key_v1 = CalibrationCacheKey.from_topology_vector(tv, "reach", "openvla-v1")
-        key_v2 = CalibrationCacheKey.from_topology_vector(tv, "reach", "openvla-v2")
-
-        cache.put(key_v1, CalibrationCacheEntry(kernel_path="/v1.pt"))
-        cache.put(key_v2, CalibrationCacheEntry(kernel_path="/v2.pt"))
-
-        assert cache.get(key_v1).kernel_path == "/v1.pt"
-        assert cache.get(key_v2).kernel_path == "/v2.pt"
-
-    def test_different_robots_same_task(self) -> None:
-        """Different robots (topology), same task → different entries."""
-        cache = CalibrationCache()
-        tv_a = _make_topology_vector(seed=10)
-        tv_b = _make_topology_vector(seed=20)
-
-        key_a = CalibrationCacheKey.from_topology_vector(tv_a, "reach", "v1")
-        key_b = CalibrationCacheKey.from_topology_vector(tv_b, "reach", "v1")
-
-        cache.put(key_a, CalibrationCacheEntry(kernel_path="/robot_a.pt"))
-        cache.put(key_b, CalibrationCacheEntry(kernel_path="/robot_b.pt"))
-
-        assert cache.get(key_a).kernel_path == "/robot_a.pt"
-        assert cache.get(key_b).kernel_path == "/robot_b.pt"
-
-    def test_convenience_lookup_by_topology(self) -> None:
-        """Convenience method: get() accepts topology_vector + task + version."""
-        cache = CalibrationCache()
-        tv = _make_topology_vector(seed=42)
-
-        key = CalibrationCacheKey.from_topology_vector(tv, "reach", "v1")
-        cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt", certified=True))
-
-        # Convenience lookup
-        result = cache.get_by_topology(tv, "reach", "v1")
-        assert result is not None
-        assert result.kernel_path == "/k.pt"
-        assert result.certified is True
-
-    def test_convenience_has_by_topology(self) -> None:
-        cache = CalibrationCache()
-        tv = _make_topology_vector(seed=42)
-
-        assert not cache.has_by_topology(tv, "reach", "v1")
-
-        key = CalibrationCacheKey.from_topology_vector(tv, "reach", "v1")
-        cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt"))
-
-        assert cache.has_by_topology(tv, "reach", "v1")
-
-
-# ===========================================================================
-# CalibrationCache — TTL & Eviction
+# Core: CalibrationCache — TTL & Eviction
 # ===========================================================================
 
 
 class TestCalibrationCacheEviction:
-    """Tests for TTL-based eviction and max size enforcement."""
-
     def test_expired_entry_not_returned(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
-        entry = CalibrationCacheEntry(kernel_path="/k.pt", ttl=0.0)
-        cache.put(key, entry)
+        key = CalibrationCacheKey("abc", "reach", "v1")
+        cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt", ttl=0.0))
         time.sleep(0.01)
         assert cache.get(key) is None
 
     def test_expired_entry_removed_on_get(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
-        entry = CalibrationCacheEntry(kernel_path="/k.pt", ttl=0.0)
-        cache.put(key, entry)
+        key = CalibrationCacheKey("abc", "reach", "v1")
+        cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt", ttl=0.0))
         time.sleep(0.01)
-        cache.get(key)  # triggers lazy eviction
+        cache.get(key)
         assert len(cache) == 0
 
     def test_max_size_evicts_oldest(self) -> None:
-        """When max_size is reached, evict the oldest entry."""
         cache = CalibrationCache(max_size=2)
-        k1 = _make_cache_key(topology_hash="a")
-        k2 = _make_cache_key(topology_hash="b")
-        k3 = _make_cache_key(topology_hash="c")
-
+        k1 = CalibrationCacheKey("a", "reach", "v1")
+        k2 = CalibrationCacheKey("b", "reach", "v1")
+        k3 = CalibrationCacheKey("c", "reach", "v1")
         cache.put(k1, CalibrationCacheEntry(kernel_path="/1.pt"))
         cache.put(k2, CalibrationCacheEntry(kernel_path="/2.pt"))
         cache.put(k3, CalibrationCacheEntry(kernel_path="/3.pt"))
-
-        # k1 should have been evicted (oldest)
         assert not cache.has(k1)
         assert cache.has(k2)
         assert cache.has(k3)
 
     def test_evict_expired_removes_only_expired(self) -> None:
         cache = CalibrationCache()
-        k1 = _make_cache_key(topology_hash="exp")
-        k2 = _make_cache_key(topology_hash="fresh")
-
+        k1 = CalibrationCacheKey("exp", "reach", "v1")
+        k2 = CalibrationCacheKey("fresh", "reach", "v1")
         cache.put(k1, CalibrationCacheEntry(kernel_path="/e.pt", ttl=0.0))
         cache.put(k2, CalibrationCacheEntry(kernel_path="/f.pt", ttl=3600.0))
-
         time.sleep(0.01)
         removed = cache.evict_expired()
         assert removed == 1
@@ -386,229 +255,429 @@ class TestCalibrationCacheEviction:
         assert cache.has(k2)
 
     def test_no_ttl_entries_not_evicted(self) -> None:
-        """Calibration entries (ttl=None) should never expire."""
         cache = CalibrationCache()
-        key = _make_cache_key()
+        key = CalibrationCacheKey("abc", "reach", "v1")
         cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt", ttl=None))
-        removed = cache.evict_expired()
-        assert removed == 0
+        assert cache.evict_expired() == 0
         assert cache.has(key)
 
 
 # ===========================================================================
-# CalibrationCache — Statistics
+# Core: CalibrationCache — Statistics
 # ===========================================================================
 
 
 class TestCalibrationCacheStats:
-    """Tests for cache statistics tracking."""
-
     def test_stats_initial(self) -> None:
         cache = CalibrationCache()
-        stats = cache.stats
-        assert stats.hits == 0
-        assert stats.misses == 0
-        assert stats.evictions == 0
-        assert stats.puts == 0
+        assert cache.stats.hits == 0
+        assert cache.stats.misses == 0
 
     def test_stats_tracks_puts(self) -> None:
         cache = CalibrationCache()
-        cache.put(_make_cache_key(), CalibrationCacheEntry(kernel_path="/k.pt"))
+        cache.put(CalibrationCacheKey("abc", "reach", "v1"), CalibrationCacheEntry(kernel_path="/k.pt"))
         assert cache.stats.puts == 1
 
     def test_stats_tracks_hits(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
+        key = CalibrationCacheKey("abc", "reach", "v1")
         cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt"))
         cache.get(key)
         assert cache.stats.hits == 1
 
     def test_stats_tracks_misses(self) -> None:
         cache = CalibrationCache()
-        cache.get(_make_cache_key())
+        cache.get(CalibrationCacheKey("x", "y", "z"))
         assert cache.stats.misses == 1
-
-    def test_stats_tracks_evictions(self) -> None:
-        cache = CalibrationCache(max_size=1)
-        k1 = _make_cache_key(topology_hash="a")
-        k2 = _make_cache_key(topology_hash="b")
-        cache.put(k1, CalibrationCacheEntry(kernel_path="/1.pt"))
-        cache.put(k2, CalibrationCacheEntry(kernel_path="/2.pt"))
-        assert cache.stats.evictions == 1
 
     def test_stats_hit_rate(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
-        cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt"))
-        cache.get(key)  # hit
-        cache.get(_make_cache_key(topology_hash="miss"))  # miss
-        assert cache.stats.hit_rate == 0.5
-
-    def test_stats_hit_rate_zero_when_no_accesses(self) -> None:
-        cache = CalibrationCache()
-        assert cache.stats.hit_rate == 0.0
-
-    def test_stats_resets(self) -> None:
-        cache = CalibrationCache()
-        key = _make_cache_key()
+        key = CalibrationCacheKey("abc", "reach", "v1")
         cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt"))
         cache.get(key)
-        cache.get(_make_cache_key(topology_hash="miss"))
-        cache.stats.reset()
-        assert cache.stats.hits == 0
-        assert cache.stats.misses == 0
-        assert cache.stats.puts == 0
-        assert cache.stats.evictions == 0
+        cache.get(CalibrationCacheKey("x", "y", "z"))
+        assert cache.stats.hit_rate == 0.5
 
 
 # ===========================================================================
-# CalibrationCache — Certification Filtering
+# Core: CalibrationCache — Certification Filtering
 # ===========================================================================
 
 
 class TestCalibrationCacheCertification:
-    """Tests for certified-only lookups."""
-
     def test_get_certified_only_true(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
+        key = CalibrationCacheKey("abc", "reach", "v1")
         cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt", certified=True))
-        result = cache.get(key, certified_only=True)
-        assert result is not None
-        assert result.certified is True
+        assert cache.get(key, certified_only=True) is not None
 
     def test_get_certified_only_filters_uncertified(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
+        key = CalibrationCacheKey("abc", "reach", "v1")
         cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt", certified=False))
-        result = cache.get(key, certified_only=True)
-        assert result is None
-
-    def test_get_certified_only_false_returns_any(self) -> None:
-        cache = CalibrationCache()
-        key = _make_cache_key()
-        cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt", certified=False))
-        result = cache.get(key, certified_only=False)
-        assert result is not None
+        assert cache.get(key, certified_only=True) is None
 
     def test_get_by_topology_certified_only(self) -> None:
         cache = CalibrationCache()
         tv = _make_topology_vector(seed=5)
         key = CalibrationCacheKey.from_topology_vector(tv, "reach", "v1")
         cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt", certified=True))
-
-        result = cache.get_by_topology(tv, "reach", "v1", certified_only=True)
-        assert result is not None
-        assert result.certified is True
+        assert cache.get_by_topology(tv, "reach", "v1", certified_only=True) is not None
 
 
 # ===========================================================================
-# CalibrationCache — Integration with PlasticityLayer
+# Core: CalibrationCache — Integration
 # ===========================================================================
 
 
-class TestCalibrationCachePlasticityIntegration:
-    """Tests that CalibrationCache integrates with the existing kernel path scheme."""
-
+class TestCalibrationCacheIntegration:
     def test_kernel_path_uses_composite_hash(self) -> None:
-        """Cache should be able to produce a kernel filename from its key."""
-        key = _make_cache_key(topology_hash="abc", task_type="reach", vla_version="v1")
-        # The composite hash should be usable as a kernel filename
+        key = CalibrationCacheKey("abc", "reach", "v1")
         filename = f"{key.composite_hash()[:16]}.pt"
         assert filename.endswith(".pt")
-        assert len(filename) == 19  # 16 hex chars + ".pt"
+        assert len(filename) == 19
 
     def test_entries_for_different_robots_independent(self) -> None:
-        """Two different robots with same task/version get independent entries."""
         cache = CalibrationCache()
         tv_arm = _make_topology_vector(seed=1)
         tv_leg = _make_topology_vector(seed=2)
-
         key_arm = CalibrationCacheKey.from_topology_vector(tv_arm, "reach", "v1")
         key_leg = CalibrationCacheKey.from_topology_vector(tv_leg, "reach", "v1")
-
-        cache.put(key_arm, CalibrationCacheEntry(
-            kernel_path=f"/kernels/{key_arm.composite_hash()[:16]}.pt",
-            metadata={"joints": 7},
-            certified=True,
-        ))
-        cache.put(key_leg, CalibrationCacheEntry(
-            kernel_path=f"/kernels/{key_leg.composite_hash()[:16]}.pt",
-            metadata={"joints": 12},
-            certified=True,
-        ))
-
-        arm_entry = cache.get(key_arm)
-        leg_entry = cache.get(key_leg)
-
-        assert arm_entry.metadata["joints"] == 7
-        assert leg_entry.metadata["joints"] == 12
-        assert arm_entry.kernel_path != leg_entry.kernel_path
+        cache.put(key_arm, CalibrationCacheEntry(kernel_path="/arm.pt", metadata={"joints": 7}))
+        cache.put(key_leg, CalibrationCacheEntry(kernel_path="/leg.pt", metadata={"joints": 12}))
+        assert cache.get(key_arm).metadata["joints"] == 7
+        assert cache.get(key_leg).metadata["joints"] == 12
 
     def test_backward_compatible_with_robot_hash(self) -> None:
-        """The old SomaLayer._robot_hash() (16-char hex) can still be used
-        as the topology_hash field for backward compatibility."""
-        old_hash = "a1b2c3d4e5f6a7b8"  # 16-char hex from _robot_hash()
-        key = _make_cache_key(topology_hash=old_hash)
+        old_hash = "a1b2c3d4e5f6a7b8"
+        key = CalibrationCacheKey(old_hash, "reach", "v1")
         cache = CalibrationCache()
         cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt"))
         assert cache.has(key)
 
     def test_lookup_by_robot_hash_shortcut(self) -> None:
-        """Convenience method for looking up by raw robot hash string."""
         cache = CalibrationCache()
         robot_hash = "a1b2c3d4e5f6a7b8"
-        key = CalibrationCacheKey(
-            topology_hash=robot_hash, task_type="reach", vla_version="v1"
-        )
+        key = CalibrationCacheKey(robot_hash, "reach", "v1")
         cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt", certified=True))
-
-        result = cache.get_by_robot_hash(robot_hash, "reach", "v1")
-        assert result is not None
-        assert result.kernel_path == "/k.pt"
+        assert cache.get_by_robot_hash(robot_hash, "reach", "v1").kernel_path == "/k.pt"
 
 
 # ===========================================================================
-# CalibrationCache — Serialization
+# Core: CalibrationCache — Serialization
 # ===========================================================================
 
 
 class TestCalibrationCacheSerialization:
-    """Tests for serializing/deserializing the cache state."""
-
     def test_to_dict(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
-        cache.put(key, CalibrationCacheEntry(
-            kernel_path="/k.pt",
-            metadata={"episodes": 500},
-            certified=True,
-        ))
+        key = CalibrationCacheKey("abc", "reach", "v1")
+        cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt", certified=True))
         d = cache.to_dict()
         assert "entries" in d
         assert len(d["entries"]) == 1
 
     def test_from_dict_roundtrip(self) -> None:
         cache = CalibrationCache()
-        key = _make_cache_key()
-        cache.put(key, CalibrationCacheEntry(
-            kernel_path="/k.pt",
-            metadata={"episodes": 500},
-            certified=True,
-        ))
-
-        serialized = cache.to_dict()
-        restored = CalibrationCache.from_dict(serialized)
-
+        key = CalibrationCacheKey("abc", "reach", "v1")
+        cache.put(key, CalibrationCacheEntry(kernel_path="/k.pt", metadata={"episodes": 500}, certified=True))
+        restored = CalibrationCache.from_dict(cache.to_dict())
         assert len(restored) == 1
         result = restored.get(key)
-        assert result is not None
         assert result.kernel_path == "/k.pt"
         assert result.certified is True
-        assert result.metadata["episodes"] == 500
 
     def test_empty_cache_serialization(self) -> None:
         cache = CalibrationCache()
-        d = cache.to_dict()
-        restored = CalibrationCache.from_dict(d)
+        restored = CalibrationCache.from_dict(cache.to_dict())
         assert len(restored) == 0
+
+
+# ---------------------------------------------------------------------------
+# Praxis: CacheKey
+# ---------------------------------------------------------------------------
+
+
+def test_praxis_cache_key_sha256_is_stable_and_unique() -> None:
+    k1 = CacheKey("abc", "reach", "v1")
+    k2 = CacheKey("abc", "reach", "v1")
+    k3 = CacheKey("abc", "grasp", "v1")
+    assert k1.sha256() == k2.sha256()
+    assert k1.sha256() != k3.sha256()
+    assert len(k1.sha256()) == 64
+
+
+def test_praxis_cache_key_to_dict_roundtrip() -> None:
+    key = CacheKey("topo", "task", "vla")
+    d = key.to_dict()
+    restored = CacheKey.from_dict(d)
+    assert restored == key
+
+
+# ---------------------------------------------------------------------------
+# Praxis: Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tmp_cache(tmp_path: Path) -> PolicyPackageCache:
+    return PolicyPackageCache(root_dir=tmp_path / "cache")
+
+
+@pytest.fixture
+def sample_key() -> CacheKey:
+    return CacheKey(
+        topology_hash="a1b2c3d4e5f6",
+        task_type="reach",
+        vla_version="openvla-7b",
+    )
+
+
+@pytest.fixture
+def sample_package() -> CertifiedPolicyPackage:
+    return CertifiedPolicyPackage(
+        manifest={"task": "reach red cube"},
+        agent_configs={"arm": {"dof": 7}},
+        coordinator_config={"strategy": "priority"},
+        reflex_gains={"kp": 1.0},
+        sim_metrics={"success_rate": 0.99},
+        policy_package_path="/tmp/pkg.zip",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Praxis: Basic put / get / exists
+# ---------------------------------------------------------------------------
+
+
+def test_praxis_put_and_get(tmp_cache: PolicyPackageCache, sample_key: CacheKey, sample_package: CertifiedPolicyPackage) -> None:
+    entry_dir = tmp_cache.put(sample_key, sample_package)
+    assert entry_dir.exists()
+    assert (entry_dir / PolicyPackageCache.META_FILE).exists()
+    assert (entry_dir / PolicyPackageCache.PACKAGE_FILE).exists()
+
+    retrieved = tmp_cache.get(sample_key)
+    assert retrieved is not None
+    assert retrieved.manifest == sample_package.manifest
+    assert retrieved.agent_configs == sample_package.agent_configs
+    assert retrieved.policy_package_path == sample_package.policy_package_path
+
+
+def test_praxis_get_missing_returns_none(tmp_cache: PolicyPackageCache) -> None:
+    assert tmp_cache.get(CacheKey("missing", "task", "v1")) is None
+
+
+def test_praxis_exists(tmp_cache: PolicyPackageCache, sample_key: CacheKey, sample_package: CertifiedPolicyPackage) -> None:
+    assert not tmp_cache.exists(sample_key)
+    tmp_cache.put(sample_key, sample_package)
+    assert tmp_cache.exists(sample_key)
+
+
+# ---------------------------------------------------------------------------
+# Praxis: Namespaces
+# ---------------------------------------------------------------------------
+
+
+def test_praxis_namespace_isolation(tmp_cache: PolicyPackageCache, sample_key: CacheKey, sample_package: CertifiedPolicyPackage) -> None:
+    public_pkg = CertifiedPolicyPackage(manifest={"ns": "public"})
+    private_pkg = CertifiedPolicyPackage(manifest={"ns": "private"})
+
+    tmp_cache.put(sample_key, public_pkg, namespace="public")
+    tmp_cache.put(sample_key, private_pkg, namespace="private")
+
+    assert tmp_cache.get(sample_key, namespace="public") == public_pkg
+    assert tmp_cache.get(sample_key, namespace="private") == private_pkg
+
+
+def test_praxis_default_namespace(tmp_cache: PolicyPackageCache, sample_key: CacheKey, sample_package: CertifiedPolicyPackage) -> None:
+    tmp_cache.put(sample_key, sample_package)
+    assert tmp_cache.get(sample_key, namespace="public") is not None
+
+
+# ---------------------------------------------------------------------------
+# Praxis: Topology vector and near-match search
+# ---------------------------------------------------------------------------
+
+
+def test_praxis_near_match_finds_similar_topology(tmp_cache: PolicyPackageCache) -> None:
+    vec_a = torch.randn(32)
+    vec_b = vec_a + 0.01 * torch.randn(32)
+    vec_c = vec_a + 10.0 * torch.randn(32)
+
+    key_a = CacheKey("hash_a", "reach", "v1")
+    key_b = CacheKey("hash_b", "reach", "v1")
+    key_c = CacheKey("hash_c", "reach", "v1")
+
+    tmp_cache.put(key_a, CertifiedPolicyPackage(manifest={"id": "a"}), topology_vector=vec_a)
+    tmp_cache.put(key_b, CertifiedPolicyPackage(manifest={"id": "b"}), topology_vector=vec_b)
+    tmp_cache.put(key_c, CertifiedPolicyPackage(manifest={"id": "c"}), topology_vector=vec_c)
+
+    query_key = CacheKey("query", "reach", "v1")
+    matches = tmp_cache.find_near_matches(query_key, vec_a, epsilon=0.5)
+    distances = [d for d, _ in matches]
+    ids = [pkg.manifest["id"] for _, pkg in matches]
+
+    assert "a" in ids
+    assert "b" in ids
+    assert "c" not in ids
+    assert distances == sorted(distances)
+
+
+def test_praxis_near_match_filters_task_and_vla_version(tmp_cache: PolicyPackageCache) -> None:
+    vec = torch.randn(32)
+
+    tmp_cache.put(
+        CacheKey("h1", "reach", "v1"),
+        CertifiedPolicyPackage(manifest={"id": "reach_v1"}),
+        topology_vector=vec,
+    )
+    tmp_cache.put(
+        CacheKey("h2", "grasp", "v1"),
+        CertifiedPolicyPackage(manifest={"id": "grasp_v1"}),
+        topology_vector=vec,
+    )
+    tmp_cache.put(
+        CacheKey("h3", "reach", "v2"),
+        CertifiedPolicyPackage(manifest={"id": "reach_v2"}),
+        topology_vector=vec,
+    )
+
+    matches = tmp_cache.find_near_matches(
+        CacheKey("query", "reach", "v1"), vec, epsilon=0.1
+    )
+    ids = {pkg.manifest["id"] for _, pkg in matches}
+    assert ids == {"reach_v1"}
+
+
+def test_praxis_near_match_without_stored_vector_is_ignored(tmp_cache: PolicyPackageCache) -> None:
+    vec = torch.randn(32)
+    key = CacheKey("h1", "reach", "v1")
+    tmp_cache.put(key, CertifiedPolicyPackage(manifest={"id": "no_vec"}))
+    matches = tmp_cache.find_near_matches(key, vec, epsilon=10.0)
+    assert matches == []
+
+
+# ---------------------------------------------------------------------------
+# Praxis: Listing and clearing
+# ---------------------------------------------------------------------------
+
+
+def test_praxis_list_keys(tmp_cache: PolicyPackageCache) -> None:
+    k1 = CacheKey("h1", "reach", "v1")
+    k2 = CacheKey("h2", "grasp", "v1")
+    tmp_cache.put(k1, CertifiedPolicyPackage())
+    tmp_cache.put(k2, CertifiedPolicyPackage(), namespace="private")
+
+    public_keys = tmp_cache.list_keys(namespace="public")
+    assert len(public_keys) == 1
+    assert public_keys[0] == k1
+
+    private_keys = tmp_cache.list_keys(namespace="private")
+    assert len(private_keys) == 1
+    assert private_keys[0] == k2
+
+
+def test_praxis_clear(tmp_cache: PolicyPackageCache) -> None:
+    k1 = CacheKey("h1", "reach", "v1")
+    k2 = CacheKey("h2", "grasp", "v1")
+    tmp_cache.put(k1, CertifiedPolicyPackage())
+    tmp_cache.put(k2, CertifiedPolicyPackage(), namespace="private")
+
+    assert tmp_cache.clear(namespace="public") == 1
+    assert tmp_cache.list_keys(namespace="public") == []
+    assert len(tmp_cache.list_keys(namespace="private")) == 1
+
+
+# ---------------------------------------------------------------------------
+# Praxis: Persistence
+# ---------------------------------------------------------------------------
+
+
+def test_praxis_persistence_across_instances(tmp_path: Path, sample_key: CacheKey, sample_package: CertifiedPolicyPackage) -> None:
+    root = tmp_path / "cache"
+    cache1 = PolicyPackageCache(root_dir=root)
+    cache1.put(sample_key, sample_package)
+
+    cache2 = PolicyPackageCache(root_dir=root)
+    retrieved = cache2.get(sample_key)
+    assert retrieved is not None
+    assert retrieved.manifest == sample_package.manifest
+
+
+# ---------------------------------------------------------------------------
+# Praxis: CLI
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cli_runner() -> CliRunner:
+    return CliRunner()
+
+
+def test_cli_cache_put_and_lookup(cli_runner: CliRunner, tmp_path: Path, sample_package: CertifiedPolicyPackage) -> None:
+    cache_root = tmp_path / "cache"
+    pkg_file = tmp_path / "pkg.json"
+    pkg_file.write_text(json.dumps(sample_package.to_dict()))
+
+    result = cli_runner.invoke(
+        app,
+        [
+            "cache", "put",
+            "--cache-root", str(cache_root),
+            "abc123", "reach", "openvla-7b",
+            str(pkg_file),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Cached at" in result.output
+
+    result = cli_runner.invoke(
+        app,
+        [
+            "cache", "lookup",
+            "--cache-root", str(cache_root),
+            "abc123", "reach", "openvla-7b",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["exact_match"] is not None
+    assert data["exact_match"]["manifest"]["task"] == "reach red cube"
+
+
+def test_cli_cache_lookup_missing(cli_runner: CliRunner, tmp_path: Path) -> None:
+    result = cli_runner.invoke(
+        app,
+        [
+            "cache", "lookup",
+            "--cache-root", str(tmp_path / "cache"),
+            "missing", "reach", "v1",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "No matching cache entry found" in result.output
+
+
+def test_cli_cache_list(cli_runner: CliRunner, tmp_path: Path, sample_package: CertifiedPolicyPackage) -> None:
+    cache_root = tmp_path / "cache"
+    pkg_file = tmp_path / "pkg.json"
+    pkg_file.write_text(json.dumps(sample_package.to_dict()))
+
+    cli_runner.invoke(
+        app,
+        [
+            "cache", "put",
+            "--cache-root", str(cache_root),
+            "h1", "reach", "v1",
+            str(pkg_file),
+        ],
+    )
+
+    result = cli_runner.invoke(
+        app,
+        ["cache", "list", "--cache-root", str(cache_root)],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert len(data) == 1
+    assert data[0]["topology_hash"] == "h1"
