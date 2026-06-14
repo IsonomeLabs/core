@@ -471,6 +471,10 @@ class PillarEquilibriumView:
             "max_drift_axis": max(self._drift, key=self._drift.get) if self._drift else None,
             "max_drift_value": round(max(self._drift.values()), 4) if self._drift else 0.0,
         }
+        # Include convergence status when available
+        result["convergence_status"] = (
+            self._convergence_status.value if self._convergence_status is not None else None
+        )
         if self._velocities:
             result["velocities"] = {
                 k: round(v, 4) for k, v in self._velocities.items()

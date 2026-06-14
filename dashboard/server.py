@@ -305,6 +305,67 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
         # Most active axis
         most_active = el.most_active_axis()
 
+        # Event Log Analysis (iter-032 methods)
+        pillar_stress_scores = {}
+        try:
+            raw_stress = el.pillar_stress_scores()
+            pillar_stress_scores = {p.value: round(s, 4) for p, s in raw_stress.items()}
+        except Exception:
+            pass
+
+        axis_volatility = {}
+        try:
+            raw_vol = el.axis_volatility()
+            axis_volatility = {k: round(v, 4) for k, v in raw_vol.items()}
+        except Exception:
+            pass
+
+        feedback_bursts = []
+        try:
+            feedback_bursts = el.detect_feedback_bursts(window=5, threshold=3)
+        except Exception:
+            pass
+
+        dominant_feedback_source = {}
+        try:
+            dom_result = el.dominant_feedback_source()
+            for axis_id, info in dom_result.items():
+                dominant_feedback_source[axis_id] = {
+                    "pillar": info.get("pillar", "").value if hasattr(info.get("pillar", ""), "value") else str(info.get("pillar", "")),
+                    "total_weight": round(info.get("total_weight", 0.0), 4),
+                    "event_count": info.get("event_count", 0),
+                }
+        except Exception:
+            pass
+
+        convergence_from_events = {}
+        try:
+            conv_result = el.detect_convergence_from_events()
+            convergence_from_events = {
+                "direction": conv_result.get("direction", "unknown"),
+                "confidence": round(conv_result.get("confidence", 0.0), 3),
+                "trend_slope": round(conv_result.get("trend_slope", 0.0), 4),
+            }
+        except Exception:
+            pass
+
+        cross_pillar_conflicts = []
+        try:
+            raw_conflicts = el.detect_cross_pillar_conflicts()
+            for c in raw_conflicts:
+                pillars = c.get("pillars", [])
+                pillar_vals = []
+                for p in pillars:
+                    pillar_vals.append(p.value if hasattr(p, "value") else str(p))
+                cross_pillar_conflicts.append({
+                    "pillars": pillar_vals,
+                    "axis": c.get("axis_id", ""),
+                    "opposing_deltas": [round(d, 4) for d in c.get("opposing_deltas", [])],
+                    "conflict_intensity": round(c.get("conflict_intensity", 0.0), 3),
+                })
+        except Exception:
+            pass
+
         event_log_data = {
             "total_events": el.total_events,
             "current_size": len(el._events),
@@ -315,6 +376,12 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
             "recent_events": recent_list,
             "feedback_density": round(feedback_density, 3),
             "most_active_axis": most_active or "",
+            "pillar_stress_scores": pillar_stress_scores,
+            "axis_volatility": axis_volatility,
+            "feedback_bursts": feedback_bursts,
+            "dominant_feedback_source": dominant_feedback_source,
+            "convergence_from_events": convergence_from_events,
+            "cross_pillar_conflicts": cross_pillar_conflicts,
         }
 
     return {

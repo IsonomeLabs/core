@@ -346,8 +346,7 @@ class TestViewSummaryWithConvergence:
         )
         view = engine.view_for(Pillar.COGNITION)
         summary = view.summary()
-        # convergence_status not yet exposed in summary — skipped
-        pass  # assert "convergence_status" in summary  # TODO: wire convergence_status into summary
+        assert "convergence_status" in summary
 
     def test_convergence_status_in_summary_matches_view(self):
         """Summary convergence_status matches view.convergence_status."""
@@ -359,19 +358,16 @@ class TestViewSummaryWithConvergence:
         view = engine.view_for(Pillar.COGNITION)
         summary = view.summary()
         if view.convergence_status is not None:
-            pass  # TODO: wire convergence_status into PillarEquilibriumView
-        # assert summary["convergence_status"] == view.convergence_status.value
+            assert summary["convergence_status"] == view.convergence_status.value
         else:
-            pass  # TODO: wire convergence_status into summary
-        # assert summary["convergence_status"] is None
+            assert summary["convergence_status"] is None
 
     def test_summary_without_convergence_detection(self):
         """Summary has convergence_status=None without detection."""
         engine = _make_engine(enable_health_score=True)
         view = engine.view_for(Pillar.COGNITION)
         summary = view.summary()
-        pass  # TODO: wire convergence_status into summary
-        # assert summary["convergence_status"] is None
+        assert summary["convergence_status"] is None
 
 
 # ═══════════════════════════════════════════════════════════════════
