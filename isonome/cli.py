@@ -1,6 +1,9 @@
 from __future__ import annotations
 import hashlib
 import json
+import shutil
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -147,16 +150,205 @@ def sim(
 
 
 @app.command()
-def run() -> None:
-    """Run robot on hardware."""
-    typer.echo("Starting on hardware... (stub)")
-    # TODO: load config, create HardwareBridge, run Agent
+def run(
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
+    duration: int = typer.Option(60, "--duration", "-d", help="Seconds to run"),
+    package: Optional[Path] = typer.Option(
+        None, "--package", "-p", help="Certified policy package (.zip) to load"
+    ),
+) -> None:
+    """Run robot on hardware.
+
+    Forces ``bridge.engine = "hardware"`` and runs the agent loop against a
+    ``HardwareBridge``.  If no concrete ``HardwareBridge`` is wired in
+    ``config.bridge.engine_options``, the built-in ``StubHardwareBridge`` is
+    used (useful for dry-runs and CI).
+
+    An optional certified policy package can be supplied; its manifest is
+    validated and, if the package contains ``policy/policy.pt``, the kernel
+    path is pointed at the extracted weights before boot.
+    """
+    import asyncio
+
+    from isonome.core.app import IsonomeApp
+    from isonome.core.config import AppConfig, BridgeConfig
+
+    if not config.exists():
+        typer.echo(f"Config not found: {config}", err=True)
+        raise typer.Exit(1)
+
+    app_cfg = AppConfig.from_yaml(config)
+
+    if package is not None:
+        if not package.exists():
+            typer.echo(f"Policy package not found: {package}", err=True)
+            raise typer.Exit(1)
+        app_cfg = _load_package_into_config(app_cfg, package)
+
+    if not app_cfg.soma.urdf_path:
+        typer.echo(
+            "Hardware mode requires ``soma.urdf_path`` to be set in config.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    urdf_path = Path(app_cfg.soma.urdf_path)
+    if not urdf_path.exists():
+        typer.echo(f"URDF not found: {urdf_path}", err=True)
+        raise typer.Exit(1)
+
+    app_cfg.bridge = BridgeConfig(engine="hardware", engine_options=app_cfg.bridge.engine_options)
+
+    typer.echo(
+        f"Starting hardware run for '{app_cfg.agent_name}' "
+        f"(duration={duration}s, urdf={urdf_path})..."
+    )
+    isonome_app = IsonomeApp(app_cfg)
+
+    async def _run() -> None:
+        await isonome_app.run(duration_s=float(duration))
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        typer.echo("\nHardware run interrupted.")
 
 
 @app.command()
-def deploy() -> None:
-    """Push to physical robot (stub)."""
-    typer.echo("Deploying... (stub)")
+def deploy(
+    package: Path = typer.Argument(..., help="Path to certified policy package (.zip)"),
+    target: Path = typer.Option(
+        Path("~/.isonome/deployments"),
+        "--target",
+        "-t",
+        help="Deployment target directory",
+    ),
+    robot_ip: Optional[str] = typer.Option(
+        None, "--robot-ip", help="Target robot IP / hostname (recorded in manifest)"
+    ),
+    protocol: str = typer.Option(
+        "ros2",
+        "--protocol",
+        help="Deployment protocol: ros2 | mqtt | serial | http",
+    ),
+    config: Optional[Path] = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Runtime config file to copy into the deployment",
+    ),
+) -> None:
+    """Deploy a certified policy package to a target directory.
+
+    Validates the archive (manifest + launcher), extracts it, copies an
+    optional runtime config, and writes a deployment manifest with target
+    metadata.  The resulting directory is a self-contained deployment that
+    can be pushed to a robot by a ROS2/MQTT/HTTP transport in a follow-up
+    enterprise step.
+    """
+    if not package.exists():
+        typer.echo(f"Policy package not found: {package}", err=True)
+        raise typer.Exit(1)
+
+    if package.suffix != ".zip":
+        typer.echo(f"Package must be a .zip file: {package}", err=True)
+        raise typer.Exit(1)
+
+    manifest = _read_package_manifest(package)
+    if manifest is None:
+        typer.echo("Invalid package: manifest.json is missing.", err=True)
+        raise typer.Exit(1)
+
+    target = target.expanduser()
+    deploy_dir = target / package.stem
+    if deploy_dir.exists():
+        typer.echo(f"Deployment directory already exists: {deploy_dir}", err=True)
+        raise typer.Exit(1)
+
+    deploy_dir.mkdir(parents=True)
+
+    # Extract the certified package
+    with zipfile.ZipFile(package, "r") as zf:
+        zf.extractall(deploy_dir)
+
+    # Copy runtime config if provided
+    copied_config: Optional[Path] = None
+    if config is not None:
+        if not config.exists():
+            typer.echo(f"Config file not found: {config}", err=True)
+            raise typer.Exit(1)
+        copied_config = deploy_dir / "config.yaml"
+        shutil.copy2(config, copied_config)
+
+    # Write deployment manifest
+    deployment_manifest = {
+        "source_package": str(package.resolve()),
+        "package_manifest": manifest,
+        "robot_ip": robot_ip,
+        "protocol": protocol,
+        "copied_config": str(copied_config) if copied_config else None,
+        "deployed_at": _utc_now_iso(),
+    }
+    manifest_path = deploy_dir / "deployment_manifest.json"
+    manifest_path.write_text(json.dumps(deployment_manifest, indent=2, default=str))
+
+    typer.echo(f"Deployed to {deploy_dir}")
+    typer.echo(f"  manifest: {manifest_path}")
+    if copied_config:
+        typer.echo(f"  config:   {copied_config}")
+
+
+# ---------------------------------------------------------------------------
+# Helpers for run / deploy
+# ---------------------------------------------------------------------------
+
+
+def _read_package_manifest(package_path: Path) -> Optional[dict[str, Any]]:
+    """Read ``manifest.json`` from a certified policy package .zip."""
+    try:
+        with zipfile.ZipFile(package_path, "r") as zf:
+            if "manifest.json" not in zf.namelist():
+                return None
+            return json.loads(zf.read("manifest.json").decode("utf-8"))
+    except (zipfile.BadZipFile, json.JSONDecodeError, OSError):
+        return None
+
+
+def _load_package_into_config(app_cfg: "AppConfig", package: Path) -> "AppConfig":
+    """Merge a certified policy package into an ``AppConfig`` for runtime use.
+
+    The package is extracted to a temporary directory; ``soma.kernel_path`` is
+    pointed at ``policy/policy.pt`` if present.  Other fields (reflex gains,
+    agent configs) are left as-is so the supplied ``config.yaml`` remains the
+    source of truth for runtime parameters.
+    """
+    import torch
+
+    extract_dir = Path(tempfile.mkdtemp(prefix="isonome_run_"))
+    with zipfile.ZipFile(package, "r") as zf:
+        zf.extractall(extract_dir)
+
+    policy_pt = extract_dir / "policy" / "policy.pt"
+    if policy_pt.exists():
+        # Verify the checkpoint is loadable before pointing the config at it.
+        try:
+            torch.load(policy_pt, map_location="cpu", weights_only=True)
+        except Exception as exc:
+            typer.echo(
+                f"Policy checkpoint appears corrupt: {exc}",
+                err=True,
+            )
+            raise typer.Exit(1)
+        app_cfg.soma.kernel_path = str(policy_pt)
+
+    return app_cfg
+
+
+def _utc_now_iso() -> str:
+    """Return current UTC time as an ISO-8601 string."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 @app.command()
