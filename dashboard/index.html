@@ -917,6 +917,195 @@
     padding: 8px 0;
 }
 
+
+/* ── Event Log Analysis ────────────────────────────── */
+.eventlog-analysis {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+}
+.eventlog-analysis-title {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 8px;
+}
+.eventlog-analysis-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.eventlog-analysis-section {
+    background: var(--surface2);
+    padding: 8px;
+}
+.eventlog-analysis-section-title {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 6px;
+}
+.eventlog-stress-row, .eventlog-vol-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 10px;
+}
+.eventlog-stress-label, .eventlog-vol-label {
+    width: 70px;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+    color: var(--text);
+}
+.eventlog-stress-bar, .eventlog-vol-bar {
+    flex: 1;
+    height: 8px;
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    overflow: hidden;
+}
+.eventlog-stress-fill, .eventlog-vol-fill {
+    height: 100%;
+    opacity: 0.7;
+}
+.eventlog-stress-fill.pillar-cognition { background: var(--accent-cyan); }
+.eventlog-stress-fill.pillar-praxis { background: var(--accent-amber); }
+.eventlog-stress-fill.pillar-mneme { background: var(--accent-green); }
+.eventlog-vol-fill { background: var(--accent-red); }
+.eventlog-stress-value, .eventlog-vol-value {
+    width: 40px;
+    text-align: right;
+    font-family: inherit;
+    font-weight: 600;
+    font-size: 9px;
+    color: var(--text-bright);
+}
+.eventlog-convergence-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 10px;
+}
+.eventlog-conv-direction {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.eventlog-conv-direction.converging { color: var(--accent-green); }
+.eventlog-conv-direction.diverging { color: var(--accent-red); }
+.eventlog-conv-direction.stable { color: var(--accent-cyan); }
+.eventlog-conv-direction.unknown { color: var(--text-dim); }
+.eventlog-conv-confidence {
+    font-size: 9px;
+    color: var(--text-dim);
+}
+.eventlog-conv-bar {
+    flex: 1;
+    height: 6px;
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    overflow: hidden;
+}
+.eventlog-conv-bar-fill {
+    height: 100%;
+    opacity: 0.7;
+}
+.eventlog-conv-bar-fill.converging { background: var(--accent-green); }
+.eventlog-conv-bar-fill.diverging { background: var(--accent-red); }
+.eventlog-conv-bar-fill.stable { background: var(--accent-cyan); }
+.eventlog-conv-bar-fill.unknown { background: var(--text-dim); }
+.eventlog-bursts-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px 0;
+}
+.eventlog-burst-badge {
+    font-size: 9px;
+    padding: 2px 6px;
+    background: rgba(204, 51, 51, 0.15);
+    border: 1px solid var(--accent-red);
+    color: var(--accent-red);
+}
+.eventlog-no-bursts {
+    font-size: 9px;
+    color: var(--text-dim);
+    font-style: italic;
+}
+.eventlog-conflicts-container {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 0;
+}
+.eventlog-conflict-card {
+    background: rgba(204, 51, 51, 0.08);
+    border: 1px solid rgba(204, 51, 51, 0.3);
+    padding: 6px 8px;
+    font-size: 9px;
+}
+.eventlog-conflict-pillars {
+    font-weight: 600;
+    color: var(--accent-red);
+    margin-bottom: 2px;
+}
+.eventlog-conflict-detail {
+    color: var(--text);
+    display: flex;
+    gap: 8px;
+}
+.eventlog-conflict-axis {
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+}
+.eventlog-conflict-intensity {
+    font-family: inherit;
+    font-weight: 600;
+    color: var(--accent-amber);
+}
+.eventlog-conflict-deltas {
+    color: var(--text-dim);
+}
+.eventlog-dominant-source-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 10px;
+}
+.eventlog-dominant-source-axis {
+    width: 70px;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
+    color: var(--text);
+}
+.eventlog-dominant-source-pillar {
+    font-weight: 600;
+    width: 60px;
+}
+.eventlog-dominant-source-pillar.pillar-cognition { color: var(--accent-cyan); }
+.eventlog-dominant-source-pillar.pillar-praxis { color: var(--accent-amber); }
+.eventlog-dominant-source-pillar.pillar-mneme { color: var(--accent-green); }
+.eventlog-dominant-source-weight {
+    font-family: inherit;
+    font-weight: 600;
+    color: var(--text-bright);
+    width: 50px;
+    text-align: right;
+}
+.eventlog-dominant-source-count {
+    color: var(--text-dim);
+    font-size: 9px;
+}
+
 /* ── Convergence & Health ─────────────────────────────── */
 .health-gauge-container {
  display: flex;
@@ -1381,6 +1570,8 @@
       <div id="eventlog-container">
           <div class="eventlog-no-data">No event log data</div>
       </div>
+      <div id="eventlog-analysis-container">
+      </div>
   </div>
 
   </div>
@@ -1428,6 +1619,7 @@ function render(state) {
  renderAdaptiveDamping(state);
  renderConvergenceHealth(state);
  renderEventLog(state);
+ renderEventLogAnalysis(state);
  renderAttention(state);
  renderMneme(state);
  renderCalibration(state);
@@ -1961,6 +2153,174 @@ function buildConvergenceTrendSparkline(trend) {
  const polyline = '<polyline points="' + points.join(' ') + '" fill="none" stroke="var(--accent-cyan)" stroke-width="1.2" opacity="0.8"/>';
 
  return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' + zeroLine + polyline + '</svg>';
+}
+
+
+function renderEventLogAnalysis(state) {
+    const container = document.getElementById("eventlog-analysis-container");
+    const el = state.event_log;
+
+    if (!el) {
+        container.innerHTML = '';
+        return;
+    }
+
+    var hasPillarStress = el.pillar_stress_scores && Object.keys(el.pillar_stress_scores).length > 0;
+    var hasAxisVol = el.axis_volatility && Object.keys(el.axis_volatility).length > 0;
+    var hasConvergence = el.convergence_from_events && Object.keys(el.convergence_from_events).length > 0;
+    var hasBursts = el.feedback_bursts && el.feedback_bursts.length > 0;
+    var hasConflicts = el.cross_pillar_conflicts && el.cross_pillar_conflicts.length > 0;
+    var hasDominant = el.dominant_feedback_source && Object.keys(el.dominant_feedback_source).length > 0;
+
+    if (!hasPillarStress && !hasAxisVol && !hasConvergence && !hasBursts && !hasConflicts && !hasDominant) {
+        container.innerHTML = '';
+        return;
+    }
+
+    var html = '<div class="eventlog-analysis">';
+    html += '<div class="eventlog-analysis-title">Event Log Analysis</div>';
+
+    if (hasPillarStress || hasAxisVol) {
+        html += '<div class="eventlog-analysis-grid">';
+
+        if (hasPillarStress) {
+            html += '<div class="eventlog-analysis-section">';
+            html += '<div class="eventlog-analysis-section-title">Pillar Stress</div>';
+            var maxStress = Math.max.apply(null, Object.values(el.pillar_stress_scores).concat([0.01]));
+            for (var pillar in el.pillar_stress_scores) {
+                var score = el.pillar_stress_scores[pillar];
+                var pct = (score / maxStress * 100).toFixed(1);
+                html += '<div class="eventlog-stress-row">';
+                html += '<span class="eventlog-stress-label pillar-' + pillar + '" style="font-weight:600">' + escapeHtml(pillar) + '</span>';
+                html += '<div class="eventlog-stress-bar"><div class="eventlog-stress-fill pillar-' + pillar + '" style="width:' + pct + '%"></div></div>';
+                html += '<span class="eventlog-stress-value">' + score.toFixed(3) + '</span>';
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+
+        if (hasAxisVol) {
+            html += '<div class="eventlog-analysis-section">';
+            html += '<div class="eventlog-analysis-section-title">Axis Volatility</div>';
+            var maxVol = Math.max.apply(null, Object.values(el.axis_volatility).concat([0.01]));
+            var volKeys = Object.keys(el.axis_volatility);
+            volKeys.sort(function(a, b) { return el.axis_volatility[b] - el.axis_volatility[a]; });
+            volKeys = volKeys.slice(0, 8);
+            for (var vi = 0; vi < volKeys.length; vi++) {
+                var axis = volKeys[vi];
+                var vol = el.axis_volatility[axis];
+                var vPct = (vol / maxVol * 100).toFixed(1);
+                html += '<div class="eventlog-vol-row">';
+                html += '<span class="eventlog-vol-label">' + escapeHtml(axis.replace(/_/g, ' \u2194 ')) + '</span>';
+                html += '<div class="eventlog-vol-bar"><div class="eventlog-vol-fill" style="width:' + vPct + '%"></div></div>';
+                html += '<span class="eventlog-vol-value">' + vol.toFixed(3) + '</span>';
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+
+        html += '</div>';
+    }
+
+    if (hasConvergence || hasDominant) {
+        html += '<div class="eventlog-analysis-grid">';
+
+        if (hasConvergence) {
+            var conv = el.convergence_from_events;
+            var direction = conv.direction || 'unknown';
+            var confidence = conv.confidence || 0;
+            var slope = conv.trend_slope || 0;
+            html += '<div class="eventlog-analysis-section">';
+            html += '<div class="eventlog-analysis-section-title">Event Convergence</div>';
+            html += '<div class="eventlog-convergence-indicator">';
+            html += '<span class="eventlog-conv-direction ' + direction + '">' + direction.toUpperCase() + '</span>';
+            html += '<div class="eventlog-conv-bar"><div class="eventlog-conv-bar-fill ' + direction + '" style="width:' + (confidence * 100).toFixed(1) + '%"></div></div>';
+            html += '<span class="eventlog-conv-confidence">' + (confidence * 100).toFixed(1) + '%</span>';
+            html += '</div>';
+            html += '<div style="font-size:9px;color:var(--text-dim);margin-top:4px">';
+            html += 'Trend slope: ' + slope.toFixed(4);
+            html += '</div>';
+            html += '</div>';
+        }
+
+        if (hasDominant) {
+            html += '<div class="eventlog-analysis-section">';
+            html += '<div class="eventlog-analysis-section-title">Dominant Feedback Source</div>';
+            var domKeys = Object.keys(el.dominant_feedback_source).slice(0, 6);
+            for (var di = 0; di < domKeys.length; di++) {
+                var axisId = domKeys[di];
+                var info = el.dominant_feedback_source[axisId];
+                var dPillar = info.pillar || 'unknown';
+                html += '<div class="eventlog-dominant-source-row">';
+                html += '<span class="eventlog-dominant-source-axis">' + escapeHtml(axisId.replace(/_/g, ' \u2194 ')) + '</span>';
+                html += '<span class="eventlog-dominant-source-pillar pillar-' + dPillar + '">' + dPillar + '</span>';
+                html += '<span class="eventlog-dominant-source-weight">' + (info.total_weight || 0).toFixed(3) + '</span>';
+                html += '<span class="eventlog-dominant-source-count">(' + (info.event_count || 0) + ' evt)</span>';
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+
+        html += '</div>';
+    }
+
+    if (hasBursts || hasConflicts) {
+        html += '<div class="eventlog-analysis-grid">';
+
+        if (hasBursts) {
+            html += '<div class="eventlog-analysis-section">';
+            html += '<div class="eventlog-analysis-section-title">Feedback Bursts</div>';
+            html += '<div class="eventlog-bursts-container">';
+            for (var bi = 0; bi < el.feedback_bursts.length; bi++) {
+                var burst = el.feedback_bursts[bi];
+                var startTick = burst.start_tick != null ? burst.start_tick : '?';
+                var bLen = burst.length || 0;
+                html += '<span class="eventlog-burst-badge">T' + startTick + ' (' + bLen + ' events)</span>';
+            }
+            html += '</div>';
+            html += '</div>';
+        } else if (hasConflicts) {
+            html += '<div class="eventlog-analysis-section">';
+            html += '<div class="eventlog-analysis-section-title">Feedback Bursts</div>';
+            html += '<div class="eventlog-no-bursts">No bursts detected</div>';
+            html += '</div>';
+        }
+
+        if (hasConflicts) {
+            html += '<div class="eventlog-analysis-section">';
+            html += '<div class="eventlog-analysis-section-title">Cross-Pillar Conflicts</div>';
+            html += '<div class="eventlog-conflicts-container">';
+            for (var ci = 0; ci < el.cross_pillar_conflicts.length; ci++) {
+                var conflict = el.cross_pillar_conflicts[ci];
+                var cPillars = (conflict.pillars || []).join(' vs ');
+                var cAxis = (conflict.axis || '').replace(/_/g, ' \u2194 ');
+                var cDeltas = (conflict.opposing_deltas || []).map(function(d) { return (d >= 0 ? '+' : '') + d.toFixed(3); }).join(', ');
+                var cIntensity = conflict.conflict_intensity || 0;
+                html += '<div class="eventlog-conflict-card">';
+                html += '<div class="eventlog-conflict-pillars">' + escapeHtml(cPillars) + '</div>';
+                html += '<div class="eventlog-conflict-detail">';
+                html += '<span class="eventlog-conflict-axis">' + escapeHtml(cAxis) + '</span>';
+                html += '<span class="eventlog-conflict-intensity">' + cIntensity.toFixed(3) + '</span>';
+                html += '<span class="eventlog-conflict-deltas">\u0394[' + cDeltas + ']</span>';
+                html += '</div>';
+                html += '</div>';
+            }
+            html += '</div>';
+            html += '</div>';
+        } else if (hasBursts) {
+            html += '<div class="eventlog-analysis-section">';
+            html += '<div class="eventlog-analysis-section-title">Cross-Pillar Conflicts</div>';
+            html += '<div class="eventlog-conflicts-container">';
+            html += '<div style="font-size:9px;color:var(--text-dim);font-style:italic">No conflicts detected</div>';
+            html += '</div>';
+            html += '</div>';
+        }
+
+        html += '</div>';
+    }
+
+    html += '</div>';
+    container.innerHTML = html;
 }
 
 function renderEventLog(state) {

@@ -53,6 +53,8 @@ from isonome.mneme.pillar import MnemePillar
 from isonome.equilibrium.velocity import TensionVelocityTracker
 from isonome.equilibrium.event_log import TensionEventLog, TensionEventType
 from isonome.equilibrium import AdaptiveDampingController
+from isonome.equilibrium.health import EquilibriumHealthScore
+from isonome.equilibrium.convergence import ConvergenceDetector
 from isonome.types import Task
 
 
@@ -384,6 +386,31 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
             "cross_pillar_conflicts": cross_pillar_conflicts,
         }
 
+    # Health score (composite diagnostic)
+    health_state = None
+    if engine._health_scorer is not None:
+        health_state = engine._health_scorer.summary(engine)
+
+    # Convergence detection
+    convergence_state = None
+    if engine._convergence_detector is not None:
+        detector = engine._convergence_detector
+        status = detector.current_status
+        per_axis_conv = detector.per_axis_status(engine)
+        # Trigger detection to update state
+        record = detector.detect(engine)
+        trend = detector.convergence_trend()
+        convergence_state = {
+            "overall_status": status.value if status else "unknown",
+            "per_axis": {k: v.value for k, v in per_axis_conv.items()},
+            "convergence_rate": round(record.convergence_rate, 4),
+            "n_converging": record.n_converging,
+            "n_diverging": record.n_diverging,
+            "n_stable": record.n_stable,
+            "total_detections": detector.total_detections,
+            "trend": [round(t, 4) for t in trend[-30:]],
+        }
+
     return {
         "agent": {
             "name": agent.identity.name,
@@ -408,6 +435,8 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
         "task_type_profiles": profiles,
         "velocity": velocity_summary,
         "event_log": event_log_data,
+        "health": health_state,
+        "convergence": convergence_state,
         "feedback_count": engine.total_feedback_received,
         "oscillation_events": engine.total_oscillation_events,
     }
@@ -442,6 +471,10 @@ class LiveAgent:
         self.agent.engine._adaptive_damping.velocity_tracker = self.agent.engine._velocity_tracker
         # Enable tension event logging for the event log dashboard panel
         self.agent.engine._event_log = TensionEventLog()
+        # Enable health scoring for the convergence & health dashboard panel
+        self.agent.engine._health_scorer = EquilibriumHealthScore()
+        # Enable convergence detection for the convergence & health dashboard panel
+        self.agent.engine._convergence_detector = ConvergenceDetector()
         self.agent.start()
         self.tick_count = 0
         self._lock = threading.Lock()
