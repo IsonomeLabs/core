@@ -17,6 +17,15 @@ from isonome.core.calibration_cache import (
     CalibrationCacheStats,
 )
 
+# UnifiedCalibrationCache — combines core + praxis cache features
+from isonome.core.unified_calibration_cache import (
+    UnifiedCalibrationCache,
+    UnifiedCacheEntry,
+    UnifiedCacheKey,
+    UnifiedCacheStats,
+    CertifiedPolicyPackage,
+)
+
 # Torch-dependent state model names — imported lazily via __getattr__
 _STATE_NAMES = frozenset({
     "RawSensorState", "CanonicalActionChunk", "CorrectedMotorCommand",
@@ -52,4 +61,7 @@ __all__ = [
     "AppConfig", "AgentMode", "Agent", "IsonomeApp",
     "CalibrationCache", "CalibrationCacheKey",
     "CalibrationCacheEntry", "CalibrationCacheStats",
+    "UnifiedCalibrationCache", "UnifiedCacheKey",
+    "UnifiedCacheEntry", "UnifiedCacheStats",
+    "CertifiedPolicyPackage",
 ]

@@ -82,7 +82,7 @@
 
 ---
 
-## 6. Calibration Cache vs. LLM Cache — PARTIALLY CLOSED
+## 6. Calibration Cache vs. LLM Cache — ✅ CLOSED
 
 **Architecture shows:** A `Calibration Cache` keyed by `SHA256(topology + task_type + vla_version)` that stores certified policy packages.
 
@@ -90,7 +90,11 @@
 - `isonome/core/calibration_cache.py` — in-memory `CalibrationCache` with `CalibrationCacheKey`, `CalibrationCacheEntry`, `CalibrationCacheStats`, certification filtering, and `to_dict()`/`from_dict()` serialization.
 - `isonome/praxis/calibration_cache.py` — on-disk `CalibrationCache` with `CacheKey`, `CertifiedPolicyPackage`, public/private namespaces, topology-vector near-match search (L2), and CLI commands (`cache put`, `cache lookup`, `cache list`).
 
-**Gap remaining:** The two implementations are not yet unified. The core module lacks on-disk persistence and near-match search; the praxis module lacks stats tracking and certification filtering. A future iteration should merge them into a single cache that supports both in-memory hot-path and on-disk persistence with near-match.
+**Unified implementation:** ✅ `isonome/core/unified_calibration_cache.py` (iteration-030/032).
+
+- `UnifiedCalibrationCache` provides in-memory hot path with hit/miss/put/eviction stats, certification filtering on both exact-match get and near-match search, on-disk persistence so entries survive process restarts, namespaces (public/private) with directory-level isolation, near-match search by L2 topology-vector distance, TTL support with lazy eviction on read, max-size FIFO eviction for bounded caches, and `to_dict()`/`from_dict()` serialization.
+- `remove()` and `_evict_oldest()` now correctly clean both in-memory and on-disk entries (fixed iteration-032).
+- The original core and praxis implementations remain untouched for backward compatibility. The unified cache is the recommended replacement going forward.
 
 ---
 
@@ -144,7 +148,7 @@
 | Isaac Lab + MuJoCo MJX backends | Isaac Sim remote server + CPU MuJoCo |
 | FSM Compiler + Action Merger | ✅ Implemented in `isonome/core/coordination/` |
 | 32-D Topology Vector + Morphology Hash | ✅ `isonome/utils/morphology.py` |
-| Calibration Cache (topology+task+vla) | Core + Praxis implementations (unification pending) |
+| Calibration Cache (topology+task+vla) | ✅ Unified cache (core + praxis features merged) |
 | CMA-ES / 256 envs / Auto-Adjustment | ✅ Pipeline implemented; Isaac Lab backend pending |
 | Certified Policy Package (.zip) export | ✅ Implemented in `isonome/praxis/calibration/exporter.py` |
 | ROS2 topic topology | ❌ Missing entirely |
