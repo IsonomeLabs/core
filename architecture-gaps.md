@@ -33,7 +33,7 @@
 
 ---
 
-## 3. Calibration / Training Pipeline (Diagram 7: "PRD Future State")
+## 3. Calibration / Training Pipeline (Diagram 7: "PRD Future State") ⚠️ PARTIALLY CLOSED
 
 **Architecture describes:** A full simulation pipeline with:
 - URDF Stripper (per-agent joint subsets)
@@ -44,10 +44,17 @@
 - Auto-Adjustment Engine (max 5 iterations)
 - Export of a **Certified Policy Package (.zip)**
 
-**Reality:** None of this exists.
-- `PlasticityLayer` is **runtime-only** and explicitly comments: *"The open-source runtime only consumes pre-trained kernels. It does NOT implement training loops, loss functions, or cloud API calls."*
-- `isaac_bridge.py` is a **remote WebSocket/MJPEG server** for Isaac Sim viewport streaming — not Isaac Lab, not parallel envs, not calibration.
-- There is no CMA-ES, no differentiable sim, no composition validation, no auto-adjustment, and no `.zip` export.
+**Reality:** ✅ Foundational pipeline implemented in `isonome/praxis/calibration/` (iteration-031).
+- `URDFStripper` extracts per-agent joint subsets and writes stripped URDFs.
+- `DomainRandomizer` randomizes URDF mass / friction / damping and produces lighting overrides.
+- `CMAESOptimizer` is a lightweight, dependency-free CMA-ES implementation with configurable population, generations, and fitness target.
+- `CompositionValidator` runs N episodes, computes success rate, and certifies when threshold is met.
+- `PolicyPackageExporter` creates a `.zip` containing manifest, agent/coordinator configs, reflex gains, sim metrics, policy weights, launcher, and optional certification video.
+- `CalibrationPipeline` orchestrates the full loop (strip → randomize → optimize → validate → auto-adjust → export → cache).
+- CLI `isonome calibrate` added to run the pipeline end-to-end.
+- Pipeline integrates with `CalibrationCache` so certified packages are stored under `SHA256(topology + task_type + vla_version)`.
+
+**Gap remaining:** The pipeline is backend-agnostic and defaults to a mock pendulum objective. It does not yet ship an Isaac Lab env spawner or 256 GPU parallel environments. Enterprises can plug those in by providing a custom `BlackBoxObjective` and `episode_runner_factory`. This closes the open-source runtime portion of gap #3.
 
 ---
 
@@ -138,8 +145,8 @@
 | FSM Compiler + Action Merger | ✅ Implemented in `isonome/core/coordination/` |
 | 32-D Topology Vector + Morphology Hash | ✅ `isonome/utils/morphology.py` |
 | Calibration Cache (topology+task+vla) | Core + Praxis implementations (unification pending) |
-| CMA-ES / 256 envs / Auto-Adjustment | ❌ Missing entirely |
-| Certified Policy Package (.zip) export | ❌ Missing entirely |
+| CMA-ES / 256 envs / Auto-Adjustment | ✅ Pipeline implemented; Isaac Lab backend pending |
+| Certified Policy Package (.zip) export | ✅ Implemented in `isonome/praxis/calibration/exporter.py` |
 | ROS2 topic topology | ❌ Missing entirely |
 | Reflex @ 1 kHz dedicated thread | Python asyncio ~100 Hz |
 | VLA inference contexts + ring buffers | Single policy, no buffers |
