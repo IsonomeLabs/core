@@ -159,6 +159,55 @@ def deploy() -> None:
     typer.echo("Deploying... (stub)")
 
 
+@app.command()
+def calibrate(
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c"),
+    urdf: Path = typer.Option(Path("urdf/robot.urdf"), "--urdf", "-u"),
+    topology_hash: str = typer.Option(..., "--topology-hash", "-t", help="Robot topology hash"),
+    task_type: str = typer.Option("reach", "--task", help="Task type"),
+    vla_version: str = typer.Option("openvla-7b-v1", "--vla-version", help="VLA version"),
+    episodes: int = typer.Option(100, "--episodes", "-e", help="Validation episodes"),
+    namespace: str = typer.Option("public", "--namespace", "-n", help="Cache namespace"),
+    output_dir: Path = typer.Option(Path("~/.isonome/calibrations"), "--output-dir", "-o"),
+) -> None:
+    """Run the calibration / training pipeline (gap #3)."""
+    import json
+
+    import torch
+    from isonome.core.config import AppConfig
+    from isonome.praxis.calibration import CalibrationConfig, CalibrationPipeline
+
+    if not config.exists():
+        typer.echo(f"Config not found: {config}", err=True)
+        raise typer.Exit(1)
+    if not urdf.exists():
+        typer.echo(f"URDF not found: {urdf}", err=True)
+        raise typer.Exit(1)
+
+    app_cfg = AppConfig.from_yaml(config)
+    cal_cfg = CalibrationConfig(
+        task_type=task_type,
+        vla_version=vla_version,
+        output_dir=output_dir,
+        cache_namespace=namespace,
+        coordinator_strategy=app_cfg.calibration.coordinator_strategy,
+        agent_configs=app_cfg.calibration.agent_configs,
+        reflex_gains=app_cfg.calibration.reflex_gains,
+        metadata={**app_cfg.calibration.metadata, "source_config": str(config)},
+    )
+    cal_cfg.validation.episodes = episodes
+
+    pipeline = CalibrationPipeline(cal_cfg)
+    result = pipeline.run(
+        base_urdf_path=urdf,
+        topology_hash=topology_hash,
+        topology_vector=None,
+    )
+    typer.echo(json.dumps(result.to_dict(), indent=2, default=str))
+    if not result.certified:
+        raise typer.Exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Calibration cache CLI (gap #6)
 # ---------------------------------------------------------------------------
