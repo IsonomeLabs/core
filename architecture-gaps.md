@@ -127,7 +127,7 @@
 
 ---
 
-## 10. CLI Stubs — PARTIALLY CLOSED
+## 10. CLI Stubs ✅ CLOSED
 
 **Architecture shows:** `cli.py` with commands `init | sim | run | deploy`.
 
@@ -135,8 +135,8 @@
 - ✅ `init` implemented — scaffolds a robot project with `main.py`, `config.yaml`, layer stubs, and tests.
 - ✅ `sim` implemented — loads config, sets bridge engine, runs `IsonomeApp`.
 - ✅ `cache` subcommands added — `put`, `lookup`, `list` for calibration cache management.
-- ❌ `run` still a stub (hardware mode).
-- ❌ `deploy` still a stub.
+- ✅ `run` implemented — loads config, validates URDF, forces `bridge.engine = "hardware"`, and runs `IsonomeApp`. Supports an optional certified policy package (`.zip`) whose `policy/policy.pt` is pointed at as the runtime kernel.
+- ✅ `deploy` implemented — validates a certified policy package, extracts it to a deployment directory, copies an optional runtime config, and writes a deployment manifest with `robot_ip`, `protocol`, and timestamp. The resulting directory is a self-contained artifact ready for a follow-up ROS2/MQTT/HTTP push.
 
 ---
 
@@ -154,4 +154,4 @@
 | ROS2 topic topology | ❌ Missing entirely |
 | Reflex @ 1 kHz dedicated thread | Python asyncio ~100 Hz |
 | VLA inference contexts + ring buffers | Single policy, no buffers |
-| `sim` / `run` / `deploy` CLI | `sim` ✅; `cache` ✅; `run`/`deploy` stubs |
+| `sim` / `run` / `deploy` CLI | ✅ All implemented |
