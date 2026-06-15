@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -64,6 +64,20 @@ class CoordinationConfig(BaseModel):
     frequency_hz: float = 200.0
 
 
+class CalibrationPipelineConfig(BaseModel):
+    """Top-level calibration / training pipeline config (gap #3)."""
+
+    enabled: bool = False
+    task_type: str = "reach"
+    vla_version: str = "openvla-7b-v1"
+    output_dir: str = "~/.isonome/calibrations"
+    cache_namespace: str = "public"
+    coordinator_strategy: Literal["priority", "weighted_average", "nullspace"] = "priority"
+    agent_configs: dict[str, Any] = Field(default_factory=dict)
+    reflex_gains: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class AppConfig(BaseModel):
     agent_name: str = "isonome_agent"
     reflex: ReflexConfig = Field(default_factory=ReflexConfig)
@@ -75,6 +89,7 @@ class AppConfig(BaseModel):
     sim: SimConfig = Field(default_factory=SimConfig)
     bridge: BridgeConfig = Field(default_factory=BridgeConfig)
     coordination: CoordinationConfig = Field(default_factory=CoordinationConfig)
+    calibration: CalibrationPipelineConfig = Field(default_factory=CalibrationPipelineConfig)
     preset: str | None = None
     layers_dir: str = "layers"
 
