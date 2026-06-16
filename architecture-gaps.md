@@ -58,14 +58,19 @@
 
 ---
 
-## 4. Simulation Backends Mismatch
+## 4. Simulation Backends Mismatch ✅ CLOSED
 
 **Architecture shows:** Isaac Lab as primary, MuJoCo **MJX** as fallback for contact-rich tasks.
 
-**Reality:**
-- `isaac_bridge.py` uses `omni.isaac.core` (Isaac Sim), not Isaac Lab.
-- `mujoco_bridge.py` uses standard **CPU MuJoCo**, not MJX (the GPU-accelerated JAX version).
-- `mock_bridge.py` is a software pendulum with no real physics.
+**Reality:** ✅ Implemented.
+- `isonome/sim/isaac_lab_bridge.py` — `IsaacLabBridge` that loads URDFs into an Isaac Lab `ManagerBasedRLEnv` and exposes the same command protocol as the other sim bridges.
+- `isonome/sim/mjx_bridge.py` — `MJXBridge` that runs MuJoCo physics on the JAX backend via `mujoco.mjx`, copies results back to CPU for rendering/proprioception, and supports `gpu`/`cpu` device selection.
+- `isonome/bridge/adapters/isaac_lab_adapter.py` — `BodyBridge` adapter wrapping `IsaacLabBridge` for `SomaLayer` integration.
+- `isonome/bridge/adapters/mjx_adapter.py` — `BodyBridge` adapter wrapping `MJXBridge` for `SomaLayer` integration.
+- `BridgeConfig.engine` now accepts `isaac_lab` and `mujoco_mjx`; `build_body_bridge()` constructs the corresponding adapter.
+- Both backends use guarded imports so the rest of the codebase imports cleanly when the heavy dependencies are not installed; 9 tests mock the optional deps to verify the command protocol and adapter lifecycle.
+
+**Note:** Isaac Lab and JAX/MJX are large optional dependencies. The bridges raise clear runtime errors when the dependencies are missing and the existing Isaac Sim (`isaac_bridge.py`) and CPU MuJoCo (`mujoco_bridge.py`) bridges remain available for backward compatibility.
 
 ---
 
@@ -145,7 +150,7 @@
 | Architecture Claim | Actual State |
 |---|---|
 | `SomaLayer` drives Sim/HW bridge | ✅ `BodyBridge` adapters + Agent integration |
-| Isaac Lab + MuJoCo MJX backends | Isaac Sim remote server + CPU MuJoCo |
+| Isaac Lab + MuJoCo MJX backends | ✅ `IsaacLabBridge` + `MJXBridge` + adapters |
 | FSM Compiler + Action Merger | ✅ Implemented in `isonome/core/coordination/` |
 | 32-D Topology Vector + Morphology Hash | ✅ `isonome/utils/morphology.py` |
 | Calibration Cache (topology+task+vla) | ✅ Unified cache (core + praxis features merged) |
