@@ -300,7 +300,144 @@
   .cal-ece-moderate { color: var(--accent-amber); }
   .cal-ece-bad { color: var(--accent-red); }
 
-  /* ── Pillar Activity ─────────────────────────────────── */
+  /* ── Task Type Homeostasis ──────────────────────────── */
+  .tth-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 6px 0;
+  }
+  .tth-card {
+    flex: 1 1 180px;
+    min-width: 160px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+  .tth-card.highlight {
+    border-color: var(--accent-amber);
+    box-shadow: 0 0 6px rgba(255,170,0,0.15);
+  }
+  .tth-name {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-bright);
+  }
+  .tth-status {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 1px 6px;
+    border: 1px solid;
+  }
+  .tth-converged { color: var(--accent-green); border-color: var(--accent-green); }
+  .tth-learning { color: var(--accent-amber); border-color: var(--accent-amber); }
+  .tth-meta {
+    font-size: 9px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 10px;
+    width: 100%;
+    justify-content: center;
+  }
+  .tth-meta span { display: inline-flex; gap: 3px; }
+  .tth-radar {
+    width: 100%;
+    max-width: 140px;
+  }
+  .tth-norm-bar-container {
+    width: 100%;
+    height: 6px;
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    position: relative;
+    margin-top: 2px;
+  }
+  .tth-norm-segment {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    opacity: 0.8;
+  }
+  .tth-empty {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-style: italic;
+    padding: 8px 0;
+  }
+
+
+  
+  /* ── Pillar Equilibrium Score ──────────────────────── */
+  .pes-row {
+    display: flex;
+    gap: 10px;
+    padding: 6px 0;
+  }
+  .pes-card {
+    flex: 1 1 0;
+    padding: 10px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .pes-card.cognition { border-left: 3px solid var(--accent-cyan); }
+  .pes-card.praxis { border-left: 3px solid var(--accent-amber); }
+  .pes-card.mneme { border-left: 3px solid var(--accent-green); }
+  .pes-name {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .pes-score {
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .pes-label {
+    font-size: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+  }
+  .pes-bar-container {
+    width: 100%;
+    height: 4px;
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    position: relative;
+  }
+  .pes-bar-fill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    transition: width 0.3s ease;
+  }
+  .pes-meta {
+    font-size: 9px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 12px;
+    width: 100%;
+    justify-content: center;
+  }
+  .pes-meta span { display: inline-flex; gap: 3px; }
+  .pes-good { color: var(--accent-green); }
+  .pes-warn { color: var(--accent-amber); }
+  .pes-bad { color: var(--accent-red); }
+
+/* ── Pillar Activity ─────────────────────────────────── */
   .pillar-panels {
     display: grid;
     grid-template-columns: 1fr 1fr 1fr;
@@ -650,6 +787,139 @@
 }
 .budget-warning .budget-bar-fill {
  background: var(--accent-amber) !important;
+}
+
+
+/* ── Cross-Pillar Interaction ────────────────────────── */
+.cross-pillar-grid {
+  display: grid;
+  grid-template-columns: 1fr 200px;
+  gap: 12px;
+  align-items: start;
+}
+.xpi-matrix {
+  display: grid;
+  grid-template-columns: 80px repeat(3, 1fr);
+  gap: 2px;
+  font-size: 10px;
+}
+.xpi-header {
+  text-align: center;
+  font-weight: 600;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 4px 2px;
+  color: var(--text-dim);
+}
+.xpi-row-label {
+  font-weight: 600;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 4px 6px;
+  display: flex;
+  align-items: center;
+}
+.xpi-cell {
+  text-align: center;
+  padding: 6px 4px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  position: relative;
+  min-height: 36px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+.xpi-cell-diag {
+  background: #0a0a0a;
+  color: var(--text-dim);
+  font-style: italic;
+}
+.xpi-cell-value {
+  font-weight: 700;
+  font-size: 12px;
+}
+.xpi-cell-label {
+  font-size: 7px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.xpi-cell.conflict {
+  border-color: var(--accent-red);
+  background: rgba(204, 51, 51, 0.08);
+}
+.xpi-cell.active {
+  border-color: var(--accent-amber);
+}
+.xpi-influence-low { color: var(--text-dim); }
+.xpi-influence-med { color: var(--accent-amber); }
+.xpi-influence-high { color: var(--accent-red); }
+.xpi-stress-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.xpi-stress-card {
+  padding: 8px;
+  background: var(--surface2);
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.xpi-stress-card.cognition { border-left-color: var(--accent-cyan); }
+.xpi-stress-card.praxis { border-left-color: var(--accent-amber); }
+.xpi-stress-card.mneme { border-left-color: var(--accent-green); }
+.xpi-stress-name {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.xpi-stress-value {
+  font-size: 16px;
+  font-weight: 700;
+}
+.xpi-stress-meta {
+  font-size: 9px;
+  color: var(--text-dim);
+}
+.xpi-conflicts-section {
+  margin-top: 8px;
+}
+.xpi-conflict-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  background: rgba(204, 51, 51, 0.06);
+  border: 1px solid rgba(204, 51, 51, 0.2);
+  margin-bottom: 2px;
+  font-size: 10px;
+}
+.xpi-conflict-pillars {
+  font-weight: 600;
+  color: var(--accent-red);
+  min-width: 140px;
+}
+.xpi-conflict-axis {
+  color: var(--text);
+  min-width: 100px;
+}
+.xpi-conflict-intensity {
+  font-weight: 600;
+  margin-left: auto;
+}
+.xpi-no-conflicts {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 6px 0;
 }
 
 /* ── Tension Event Log ───────────────────────────────── */
@@ -1355,6 +1625,13 @@
       <div style="margin-top: 3px;">PROFILES: <span id="profiles-count" style="color:var(--text-bright)">0</span></div>
     </div>
   </div>
+  <!-- Task Type Homeostasis Panel -->
+  <div class="panel panel-wide">
+    <div class="panel-title">TASK TYPE HOMEOSTASIS</div>
+    <div id="tth-container">
+      <div class="tth-empty">No task type profiles yet</div>
+    </div>
+  </div>
 
   <!-- Pillar Activity -->
   <div class="panel panel-wide">
@@ -1564,7 +1841,52 @@
   </div>
   </div>
 
-  <!-- Tension Event Log -->
+    <!-- Cross-Pillar Interaction -->
+  <div class="panel panel-wide">
+    <div class="panel-title">CROSS-PILLAR INTERACTION</div>
+    <div class="cross-pillar-grid">
+      <div class="xpi-matrix" id="xpi-matrix">
+        <div class="xpi-header"></div>
+        <div class="xpi-header" style="color:var(--accent-cyan)">COG</div>
+        <div class="xpi-header" style="color:var(--accent-amber)">PRA</div>
+        <div class="xpi-header" style="color:var(--accent-green)">MNE</div>
+      </div>
+      <div class="xpi-stress-panel" id="xpi-stress-panel"></div>
+    </div>
+    <div class="xpi-conflicts-section" id="xpi-conflicts-section">
+      <div class="xpi-no-conflicts">No cross-pillar conflicts detected</div>
+    </div>
+  </div>
+
+  <!-- Pillar Equilibrium Score -->
+  <div class="panel panel-wide">
+    <div class="panel-title">PILLAR EQUILIBRIUM SCORE</div>
+    <div class="pes-row" id="pes-row">
+      <div class="pes-card cognition">
+        <div class="pes-name" style="color:var(--accent-cyan)">COGNITION</div>
+        <div class="pes-score" id="pes-score-cognition">--</div>
+        <div class="pes-label">equilibrium</div>
+        <div class="pes-bar-container"><div class="pes-bar-fill" id="pes-bar-cognition" style="background:var(--accent-cyan);width:0%"></div></div>
+        <div class="pes-meta"><span>stress: <span id="pes-stress-cognition">--</span></span><span>drift: <span id="pes-drift-cognition">--</span></span><span>osc: <span id="pes-osc-cognition">0</span></span></div>
+      </div>
+      <div class="pes-card praxis">
+        <div class="pes-name" style="color:var(--accent-amber)">PRAXIS</div>
+        <div class="pes-score" id="pes-score-praxis">--</div>
+        <div class="pes-label">equilibrium</div>
+        <div class="pes-bar-container"><div class="pes-bar-fill" id="pes-bar-praxis" style="background:var(--accent-amber);width:0%"></div></div>
+        <div class="pes-meta"><span>stress: <span id="pes-stress-praxis">--</span></span><span>drift: <span id="pes-drift-praxis">--</span></span><span>osc: <span id="pes-osc-praxis">0</span></span></div>
+      </div>
+      <div class="pes-card mneme">
+        <div class="pes-name" style="color:var(--accent-green)">MNEME</div>
+        <div class="pes-score" id="pes-score-mneme">--</div>
+        <div class="pes-label">equilibrium</div>
+        <div class="pes-bar-container"><div class="pes-bar-fill" id="pes-bar-mneme" style="background:var(--accent-green);width:0%"></div></div>
+        <div class="pes-meta"><span>stress: <span id="pes-stress-mneme">--</span></span><span>drift: <span id="pes-drift-mneme">--</span></span><span>osc: <span id="pes-osc-mneme">0</span></span></div>
+      </div>
+    </div>
+  </div>
+
+<!-- Tension Event Log -->
   <div class="panel panel-wide">
   <div class="panel-title">TENSION EVENT LOG</div>
       <div id="eventlog-container">
@@ -1611,18 +1933,21 @@ function setConnected(val) {
 }
 
 function render(state) {
- renderHeader(state);
- renderTensions(state);
- renderStress(state);
- renderPillars(state);
- renderVelocity(state);
- renderAdaptiveDamping(state);
- renderConvergenceHealth(state);
- renderEventLog(state);
- renderEventLogAnalysis(state);
- renderAttention(state);
- renderMneme(state);
- renderCalibration(state);
+  renderHeader(state);
+  renderTensions(state);
+  renderStress(state);
+  renderPillars(state);
+  renderCrossPillar(state);
+  renderVelocity(state);
+  renderAdaptiveDamping(state);
+  renderConvergenceHealth(state);
+  renderEventLog(state);
+  renderEventLogAnalysis(state);
+  renderAttention(state);
+  renderMneme(state);
+  renderCalibration(state);
+  renderTaskTypeHomeostasis(state);
+  renderPillarEquilibriumScore(state);
 }
 
 function renderHeader(state) {
@@ -1742,7 +2067,7 @@ function renderPillars(state) {
     const data = pa[pillar];
     if (!data) continue;
 
-    document.getElementById(ids.axes).textContent = Object.keys(data.own_axes || {}).length;
+    document.getElementById(ids.axes).textContent = (data.own_axes || []).length;
     document.getElementById(ids.stress).textContent = (data.stress_level || 0).toFixed(3);
 
     const oscList = data.oscillating || [];
@@ -2557,6 +2882,114 @@ function renderMneme(state) {
   document.getElementById("mneme-retrieve").textContent = mn.total_retrievals || 0;
 }
 
+function renderTaskTypeHomeostasis(state) {
+  const profiles = state.task_type_profiles;
+  if (!profiles) return;
+
+  const container = document.getElementById("tth-container");
+  const keys = Object.keys(profiles);
+
+  if (keys.length === 0) {
+    container.innerHTML = '<div class="tth-empty">No task type profiles yet</div>';
+    return;
+  }
+
+  let html = '<div class="tth-container">';
+  for (const taskType of keys.sort()) {
+    const p = profiles[taskType];
+    const converged = p.is_converged;
+    const ratio = p.convergence_ratio !== null && p.convergence_ratio !== undefined
+      ? p.convergence_ratio.toFixed(3)
+      : "∞";
+    const statusClass = converged ? "tth-converged" : "tth-learning";
+    const statusText = converged ? "CONVERGED" : "LEARNING";
+    const highlightClass = !converged ? " highlight" : "";
+
+    const canvasId = `tth-radar-${taskType.replace(/[^a-zA-Z0-9]/g, '-')}`;
+
+    html += `<div class="tth-card${highlightClass}">
+      <div class="tth-name">${taskType}</div>
+      <div class="tth-status ${statusClass}">${statusText}</div>
+      <div class="tth-meta">
+        <span>N: ${p.observation_count}</span>
+        <span>r: ${ratio}</span>
+      </div>
+      <canvas id="${canvasId}" class="tth-radar"></canvas>
+    </div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+
+  // Draw radar charts
+  for (const taskType of keys) {
+    const p = profiles[taskType];
+    const norm = p.norm || [];
+    const canvasId = `tth-radar-${taskType.replace(/[^a-zA-Z0-9]/g, '-')}`;
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) continue;
+
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const size = 140;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    canvas.style.width = size + 'px';
+    canvas.style.height = size + 'px';
+    ctx.scale(dpr, dpr);
+
+    if (norm.length === 0) continue;
+
+    const cx = size / 2;
+    const cy = size / 2;
+    const maxVal = Math.max(...norm.map(Math.abs).filter(v => !isNaN(v)), 0.01);
+    const maxRadius = size * 0.35;
+
+    // Draw axes
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    const numAxes = norm.length;
+    for (let i = 0; i < numAxes; i++) {
+      const angle = (Math.PI * 2 * i) / numAxes - Math.PI / 2;
+      const x = cx + Math.cos(angle) * maxRadius;
+      const y = cy + Math.sin(angle) * maxRadius;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+    }
+
+    // Draw data polygon
+    ctx.beginPath();
+    for (let i = 0; i < numAxes; i++) {
+      const val = norm[i] !== undefined ? Math.abs(norm[i]) : 0;
+      const r = (val / maxVal) * maxRadius;
+      const angle = (Math.PI * 2 * i) / numAxes - Math.PI / 2;
+      const x = cx + Math.cos(angle) * r;
+      const y = cy + Math.sin(angle) * r;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = converged ? 'rgba(0, 255, 0, 0.15)' : 'rgba(255, 170, 0, 0.15)';
+    ctx.fill();
+    ctx.strokeStyle = converged ? 'rgba(0, 255, 0, 0.6)' : 'rgba(255, 170, 0, 0.6)';
+    ctx.stroke();
+
+    // Draw data points
+    for (let i = 0; i < numAxes; i++) {
+      const val = norm[i] !== undefined ? Math.abs(norm[i]) : 0;
+      const r = (val / maxVal) * maxRadius;
+      const angle = (Math.PI * 2 * i) / numAxes - Math.PI / 2;
+      const x = cx + Math.cos(angle) * r;
+      const y = cy + Math.sin(angle) * r;
+      ctx.beginPath();
+      ctx.arc(x, y, 2, 0, Math.PI * 2);
+      ctx.fillStyle = converged ? '#0f0' : '#fa0';
+      ctx.fill();
+    }
+  }
+}
+
 function renderCalibration(state) {
   const cal = state.calibration;
   if (!cal) return;
@@ -2582,6 +3015,234 @@ function formatTokens(n) {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
   if (n >= 1000) return (n / 1000).toFixed(1) + "K";
   return n.toString();
+}
+
+function renderCrossPillar(state) {
+  const pa = state.pillar_activity || {};
+  const el = state.event_log || {};
+  const conflicts = el.cross_pillar_conflicts || [];
+  const stressScores = el.pillar_stress_scores || {};
+  const axes = state.tensions ? state.tensions.axes : [];
+
+  const pillarNames = ['cognition', 'praxis', 'mneme'];
+  const pillarColors = {
+    cognition: 'var(--accent-cyan)',
+    praxis: 'var(--accent-amber)',
+    mneme: 'var(--accent-green)',
+  };
+
+  // Build cross-axis influence data
+  // For each (row_pillar, col_pillar), count cross-axes where col_pillar owns the axis
+  // and row_pillar reads it as a cross-axis
+  const influence = {};
+  for (const src of pillarNames) {
+    influence[src] = {};
+    for (const dst of pillarNames) {
+      influence[src][dst] = { count: 0, totalDrift: 0, maxDrift: 0 };
+    }
+  }
+
+  // Populate from axes data
+  for (const axis of axes) {
+    const axisPillar = axis.pillar;
+    const drift = Math.abs(axis.drift);
+    // Find which pillars have this as a cross-axis
+    for (const otherPillar of pillarNames) {
+      if (otherPillar === axisPillar) {
+        // Self: record own-axis count
+        influence[otherPillar][otherPillar].count++;
+        influence[otherPillar][otherPillar].totalDrift += drift;
+        influence[otherPillar][otherPillar].maxDrift = Math.max(influence[otherPillar][otherPillar].maxDrift, drift);
+      } else {
+        // This axis is a cross-axis for otherPillar
+        if (pa[otherPillar] && pa[otherPillar].cross_axes) {
+          const crossIds = pa[otherPillar].cross_axes;
+          if (Array.isArray(crossIds) && crossIds.includes(axis.id)) {
+            influence[otherPillar][axisPillar].count++;
+            influence[otherPillar][axisPillar].totalDrift += drift;
+            influence[otherPillar][axisPillar].maxDrift = Math.max(influence[otherPillar][axisPillar].maxDrift, drift);
+          }
+        }
+      }
+    }
+  }
+
+  // Also use pillar_activity cross_axes for accurate counts
+  for (const [pid, pdata] of Object.entries(pa)) {
+    const ownAxes = pdata.own_axes || [];
+    const crossAxes = pdata.cross_axes || [];
+    // Self influence: number of own axes
+    if (influence[pid] && influence[pid][pid]) {
+      influence[pid][pid].count = Array.isArray(ownAxes) ? ownAxes.length : ownAxes;
+    }
+    // Cross influence count
+    for (const cid of (Array.isArray(crossAxes) ? crossAxes : [])) {
+      // Determine which pillar owns cid
+      for (const axis of axes) {
+        if (axis.id === cid && influence[pid] && influence[pid][axis.pillar]) {
+          influence[pid][axis.pillar].count = (influence[pid][axis.pillar].count || 0);
+        }
+      }
+    }
+  }
+
+  // Check which matrix cells have conflicts
+  const conflictCells = new Set();
+  for (const c of conflicts) {
+    const cpillars = c.pillars || [];
+    if (cpillars.length >= 2) {
+      conflictCells.add(cpillars[0] + '-' + cpillars[1]);
+      conflictCells.add(cpillars[1] + '-' + cpillars[0]);
+    }
+  }
+
+  // Build matrix HTML
+  const matrixEl = document.getElementById('xpi-matrix');
+  let html = '<div class="xpi-header"></div>';
+  for (const col of pillarNames) {
+    html += '<div class="xpi-header" style="color:' + pillarColors[col] + '">' + col.substring(0, 3).toUpperCase() + '</div>';
+  }
+  for (const row of pillarNames) {
+    html += '<div class="xpi-row-label" style="color:' + pillarColors[row] + '">' + row.substring(0, 3).toUpperCase() + '</div>';
+    for (const col of pillarNames) {
+      const inf = influence[row][col];
+      const isDiag = row === col;
+      const isConflict = conflictCells.has(row + '-' + col);
+      const avgDrift = inf.count > 0 ? (inf.totalDrift / inf.count) : 0;
+      let cls = 'xpi-cell';
+      if (isDiag) cls += ' xpi-cell-diag';
+      if (isConflict) cls += ' conflict';
+      if (!isDiag && inf.count > 0 && avgDrift > 0.1) cls += ' active';
+
+      let driftClass = 'xpi-influence-low';
+      if (avgDrift > 0.25) driftClass = 'xpi-influence-high';
+      else if (avgDrift > 0.1) driftClass = 'xpi-influence-med';
+
+      if (isDiag) {
+        html += '<div class="' + cls + '">';
+        html += '<span class="xpi-cell-value">' + inf.count + '</span>';
+        html += '<span class="xpi-cell-label">own axes</span>';
+        html += '</div>';
+      } else if (inf.count > 0) {
+        html += '<div class="' + cls + '">';
+        html += '<span class="xpi-cell-value ' + driftClass + '">' + avgDrift.toFixed(3) + '</span>';
+        html += '<span class="xpi-cell-label">avg drift (' + inf.count + ')</span>';
+        if (isConflict) {
+          html += '<span style="color:var(--accent-red);font-size:8px;font-weight:700;">CONFLICT</span>';
+        }
+        html += '</div>';
+      } else {
+        html += '<div class="' + cls + '">';
+        html += '<span class="xpi-cell-value" style="color:var(--text-dim)">--</span>';
+        html += '<span class="xpi-cell-label">no link</span>';
+        html += '</div>';
+      }
+    }
+  }
+  matrixEl.innerHTML = html;
+
+  // Build stress panel
+  const stressEl = document.getElementById('xpi-stress-panel');
+  let shtml = '';
+  for (const pid of pillarNames) {
+    const pdata = pa[pid] || {};
+    const stressVal = stressScores[pid] !== undefined ? stressScores[pid] : (pdata.stress_level || 0);
+    const driftVal = pdata.drift || 0;
+    const oscList = pdata.oscillating || [];
+    const init = pdata.initialized;
+    let stressColor = 'var(--accent-green)';
+    if (stressVal > 0.35) stressColor = 'var(--accent-red)';
+    else if (stressVal > 0.15) stressColor = 'var(--accent-amber)';
+
+    shtml += '<div class="xpi-stress-card ' + pid + '">';
+    shtml += '<div class="xpi-stress-name" style="color:' + pillarColors[pid] + '">' + pid.toUpperCase() + '</div>';
+    shtml += '<div class="xpi-stress-value" style="color:' + stressColor + '">' + stressVal.toFixed(3) + '</div>';
+    shtml += '<div class="xpi-stress-meta">drift: ' + driftVal.toFixed(3) + (oscList.length > 0 ? ' &middot; <span style="color:var(--accent-red)">osc: ' + oscList.length + '</span>' : '') + '</div>';
+    shtml += '</div>';
+  }
+  stressEl.innerHTML = shtml;
+
+  // Build conflicts section
+  const conflictsEl = document.getElementById('xpi-conflicts-section');
+  if (conflicts.length > 0) {
+    let chtml = '<div style="font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--accent-red);margin-bottom:4px;">Cross-Pillar Conflicts</div>';
+    for (const c of conflicts) {
+      const pillars = (c.pillars || []).map(function(p) { return p.substring(0, 3).toUpperCase(); }).join(' &harr; ');
+      const axis = c.axis || '--';
+      const intensity = (c.conflict_intensity || 0).toFixed(3);
+      chtml += '<div class="xpi-conflict-row">';
+      chtml += '<span class="xpi-conflict-pillars">' + pillars + '</span>';
+      chtml += '<span class="xpi-conflict-axis">' + axis + '</span>';
+      chtml += '<span class="xpi-conflict-intensity" style="color:var(--accent-red)">' + intensity + '</span>';
+      chtml += '</div>';
+    }
+    conflictsEl.innerHTML = chtml;
+  } else {
+    conflictsEl.innerHTML = '<div class="xpi-no-conflicts">No cross-pillar conflicts detected</div>';
+  }
+}
+
+
+
+function renderPillarEquilibriumScore(state) {
+  var pa = state.pillar_activity || {};
+  var pillars = ["cognition", "praxis", "mneme"];
+  var colors = {cognition: "var(--accent-cyan)", praxis: "var(--accent-amber)", mneme: "var(--accent-green)"};
+
+  for (var i = 0; i < pillars.length; i++) {
+    var pid = pillars[i];
+    var data = pa[pid];
+    if (!data) continue;
+
+    var stress = data.stress_level || 0;
+    var drift = typeof data.drift === "number" ? data.drift : 0;
+    var oscCount = (data.oscillating || []).length;
+    var initialized = data.initialized;
+
+    // Equilibrium score: composite of low stress, low drift, few oscillations
+    // Range 0-100: 100 = perfect equilibrium, 0 = very stressed
+    var score = 0;
+    if (initialized) {
+      // Stress component (0-40): lower stress = higher score
+      var stressScore = Math.max(0, 40 - (stress * 100));
+      // Drift component (0-30): lower drift = higher score
+      var driftScore = Math.max(0, 30 - (drift * 60));
+      // Oscillation component (0-30): fewer oscillations = higher score
+      var ownAxes = data.own_axes || [];
+      var totalAxes = Math.max(1, Array.isArray(ownAxes) ? ownAxes.length : 0);
+      var oscRatio = oscCount / totalAxes;
+      var oscScore = Math.max(0, 30 * (1 - oscRatio));
+      score = Math.round(stressScore + driftScore + oscScore);
+    }
+    score = Math.max(0, Math.min(100, score));
+
+    var scoreEl = document.getElementById("pes-score-" + pid);
+    var barEl = document.getElementById("pes-bar-" + pid);
+    var stressEl = document.getElementById("pes-stress-" + pid);
+    var driftEl = document.getElementById("pes-drift-" + pid);
+    var oscEl = document.getElementById("pes-osc-" + pid);
+
+    if (scoreEl) {
+      scoreEl.textContent = initialized ? score : "--";
+      scoreEl.className = "pes-score " + (score >= 70 ? "pes-good" : (score >= 40 ? "pes-warn" : "pes-bad"));
+    }
+    if (barEl) {
+      barEl.style.width = (initialized ? score : 0) + "%";
+    }
+    if (stressEl) {
+      stressEl.textContent = stress.toFixed(3);
+      stressEl.className = stress > 0.3 ? "pes-bad" : (stress > 0.15 ? "pes-warn" : "pes-good");
+    }
+    if (driftEl) {
+      driftEl.textContent = drift.toFixed(3);
+      driftEl.className = drift > 0.2 ? "pes-bad" : (drift > 0.1 ? "pes-warn" : "pes-good");
+    }
+    if (oscEl) {
+      oscEl.textContent = oscCount;
+      if (oscCount > 0) oscEl.className = "pes-bad";
+      else oscEl.className = "pes-good";
+    }
+  }
 }
 
 fetchState();

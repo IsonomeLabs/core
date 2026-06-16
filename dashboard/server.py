@@ -158,12 +158,21 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
     pillar_activity = {}
     for p_type, pillar in agent._pillar_map.items():
         view = engine.view_for(p_type)
+        # Convert view data to dashboard-friendly format
+        # own_axes / cross_axes: view returns dicts {id: position}, dashboard needs ID lists
+        own_axis_ids = list(view.own_axes.keys())
+        cross_axis_ids = list(view.cross_axes.keys())
+        # drift: view returns {id: float}, provide RMS aggregate + per-axis detail
+        drifts = list(view.drift.values())
+        rms_drift = (sum(d * d for d in drifts) / len(drifts)) ** 0.5 if drifts else 0.0
+
         pillar_activity[p_type.value] = {
-            "own_axes": view.own_axes,
-            "cross_axes": view.cross_axes,
+            "own_axes": own_axis_ids,
+            "cross_axes": cross_axis_ids,
             "stress_level": view.stress_level,
             "oscillating": list(view.oscillating),
-            "drift": view.drift,
+            "drift": rms_drift,
+            "per_axis_drift": view.drift,
             "initialized": pillar.initialized,
         }
 
@@ -312,6 +321,9 @@ def extract_agent_state(agent: IsonomeAgent) -> dict[str, Any]:
         try:
             raw_stress = el.pillar_stress_scores()
             pillar_stress_scores = {p.value: round(s, 4) for p, s in raw_stress.items()}
+            # Ensure all 3 pillars are present (default 0.0 for pillars with no feedback)
+            for pillar_val in ("cognition", "praxis", "mneme"):
+                pillar_stress_scores.setdefault(pillar_val, 0.0)
         except Exception:
             pass
 
