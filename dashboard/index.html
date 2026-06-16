@@ -1308,6 +1308,95 @@
     color: var(--text-dim);
     font-style: italic;
 }
+  /* -- Feedback Timeline -- */
+  .fb-timeline-container {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px 0;
+  }
+  .fb-timeline-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 28px;
+    position: relative;
+  }
+  .fb-timeline-label {
+    width: 70px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    text-align: right;
+    flex-shrink: 0;
+    color: var(--text-dim);
+  }
+  .fb-timeline-track {
+    flex: 1;
+    height: 20px;
+    background: #0a0a0a;
+    border: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: flex-end;
+    gap: 1px;
+  }
+  .fb-timeline-segment {
+    flex: 1;
+    display: flex;
+    align-items: flex-end;
+    gap: 1px;
+    height: 100%;
+    position: relative;
+  }
+  .fb-timeline-bar {
+    flex: 1;
+    min-width: 2px;
+    background: var(--text-dim);
+    opacity: 0.8;
+    transition: height 0.3s ease;
+    border-radius: 1px 1px 0 0;
+  }
+  .fb-timeline-bar.cognition { background: var(--accent-cyan); }
+  .fb-timeline-bar.praxis { background: var(--accent-amber); }
+  .fb-timeline-bar.mneme { background: var(--accent-green); }
+  .fb-timeline-burst {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(204, 51, 51, 0.15);
+    border: 1px solid rgba(204, 51, 51, 0.3);
+    pointer-events: none;
+    z-index: 2;
+  }
+  .fb-timeline-empty {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-style: italic;
+    padding: 8px 0;
+  }
+  .fb-timeline-legend {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    padding: 4px 0;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
+  }
+  .fb-timeline-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .fb-timeline-legend-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 1px;
+  }
 .eventlog-conflicts-container {
     display: flex;
     flex-direction: column;
@@ -1529,6 +1618,96 @@
  width: 100%;
  height: 100%;
 }
+
+/* ── Axis Performance Heatmap ──────────────────────────── */
+.axhm-container {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+}
+.axhm-header-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 22px;
+}
+.axhm-label-col {
+  width: 80px;
+  flex-shrink: 0;
+}
+.axhm-metric-col {
+  flex: 1;
+  display: flex;
+  gap: 0;
+  justify-content: center;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.axhm-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 24px;
+}
+.axhm-axis-name {
+  width: 80px;
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-align: right;
+  padding-right: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.axhm-cells {
+  flex: 1;
+  display: flex;
+  gap: 2px;
+  height: 20px;
+}
+.axhm-cell {
+  flex: 1;
+  min-width: 32px;
+  height: 100%;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 700;
+  color: #000;
+  transition: background-color 0.3s ease;
+}
+.axhm-empty {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 8px 0;
+}
+.axhm-legend {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  padding: 4px 0;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.axhm-legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 1px;
+  vertical-align: middle;
+  margin-right: 2px;
+}
+
 /* ── Responsive ──────────────────────────────────────── */
 @media (max-width: 900px) {
  .dashboard { grid-template-columns: 1fr; }
@@ -1886,6 +2065,32 @@
     </div>
   </div>
 
+<!-- Feedback Timeline -->
+  <div class="panel panel-wide">
+    <div class="panel-title">FEEDBACK TIMELINE</div>
+    <div class="fb-timeline-legend" id="fb-timeline-legend">
+      <span class="fb-timeline-legend-item"><span class="fb-timeline-legend-swatch" style="background:var(--accent-cyan)"></span> Cognition</span>
+      <span class="fb-timeline-legend-item"><span class="fb-timeline-legend-swatch" style="background:var(--accent-amber)"></span> Praxis</span>
+      <span class="fb-timeline-legend-item"><span class="fb-timeline-legend-swatch" style="background:var(--accent-green)"></span> Mneme</span>
+    </div>
+    <div class="fb-timeline-container" id="fb-timeline-container">
+      <div class="fb-timeline-empty">No feedback events available</div>
+    </div>
+  </div>
+
+<!-- Axis Performance Heatmap -->
+  <div class="panel panel-wide">
+    <div class="panel-title">AXIS PERFORMANCE HEATMAP</div>
+    <div class="axhm-legend" id="axhm-legend">
+      <span class="axhm-legend-swatch" style="background:#cc3333"></span> Low
+      <span class="axhm-legend-swatch" style="background:#cc9933"></span> Mid
+      <span class="axhm-legend-swatch" style="background:#33cc66"></span> High
+    </div>
+    <div class="axhm-container" id="axhm-container">
+      <div class="axhm-empty">No axis data available</div>
+    </div>
+  </div>
+
 <!-- Tension Event Log -->
   <div class="panel panel-wide">
   <div class="panel-title">TENSION EVENT LOG</div>
@@ -1942,6 +2147,8 @@ function render(state) {
   renderAdaptiveDamping(state);
   renderConvergenceHealth(state);
   renderEventLog(state);
+  renderFeedbackTimeline(state);
+  renderAxisHeatmap(state);
   renderEventLogAnalysis(state);
   renderAttention(state);
   renderMneme(state);
@@ -2483,7 +2690,7 @@ function buildConvergenceTrendSparkline(trend) {
 
 function renderEventLogAnalysis(state) {
     const container = document.getElementById("eventlog-analysis-container");
-    const el = state.event_log;
+    const el = state && state.event_log;
 
     if (!el) {
         container.innerHTML = '';
@@ -2650,7 +2857,7 @@ function renderEventLogAnalysis(state) {
 
 function renderEventLog(state) {
     const container = document.getElementById("eventlog-container");
-    const el = state.event_log;
+    const el = state && state.event_log;
 
     if (!el) {
         container.innerHTML = '<div class="eventlog-no-data">No event log data</div>';
@@ -3243,6 +3450,161 @@ function renderPillarEquilibriumScore(state) {
       else oscEl.className = "pes-good";
     }
   }
+}
+
+
+function renderFeedbackTimeline(state) {
+  const container = document.getElementById("fb-timeline-container");
+  if (!container) return;
+
+  const el = state && state.event_log;
+  if (!el || !el.recent_events || el.recent_events.length === 0) {
+    container.innerHTML = '<div class="fb-timeline-empty">No feedback events available</div>';
+    return;
+  }
+
+  const events = el.recent_events.filter(function(e) {
+    return e.event_type === "feedback_applied";
+  });
+  if (events.length === 0) {
+    container.innerHTML = '<div class="fb-timeline-empty">No feedback events in recent history</div>';
+    return;
+  }
+
+  const maxTick = Math.max.apply(null, events.map(function(e) { return e.tick || 0; }));
+  const minTick = Math.min.apply(null, events.map(function(e) { return e.tick || 0; }));
+  const bucketSize = 5;
+  const numBuckets = Math.max(20, Math.ceil((maxTick - minTick + 1) / bucketSize)) || 20;
+  const buckets = [];
+  for (var b = 0; b < numBuckets; b++) {
+    buckets.push({ cognition: 0, praxis: 0, mneme: 0, burst: false });
+  }
+
+  const bursts = el.feedback_bursts || [];
+  events.forEach(function(e) {
+    var tick = e.tick || 0;
+    var idx = Math.floor((tick - minTick) / bucketSize);
+    if (idx < 0) idx = 0;
+    if (idx >= numBuckets) idx = numBuckets - 1;
+    var pillar = (e.source_pillar || "").toLowerCase();
+    var delta = Math.abs(e.delta || 0);
+    if (pillar === "cognition") buckets[idx].cognition += delta;
+    else if (pillar === "praxis") buckets[idx].praxis += delta;
+    else if (pillar === "mneme") buckets[idx].mneme += delta;
+  });
+
+  if (Array.isArray(bursts)) {
+    bursts.forEach(function(burst) {
+      var startTick = burst.start_tick || 0;
+      var endTick = burst.end_tick || startTick;
+      var sIdx = Math.floor((startTick - minTick) / bucketSize);
+      var eIdx = Math.floor((endTick - minTick) / bucketSize);
+      if (sIdx < 0) sIdx = 0;
+      if (eIdx >= numBuckets) eIdx = numBuckets - 1;
+      for (var k = sIdx; k <= eIdx && k >= 0 && k < numBuckets; k++) {
+        buckets[k].burst = true;
+      }
+    });
+  }
+
+  var html = '<div class="fb-timeline-container">';
+  var pillars = [
+    { name: "Cognition", key: "cognition" },
+    { name: "Praxis", key: "praxis" },
+    { name: "Mneme", key: "mneme" }
+  ];
+  var maxVal = 0;
+  for (var i = 0; i < numBuckets; i++) {
+    var total = buckets[i].cognition + buckets[i].praxis + buckets[i].mneme;
+    if (total > maxVal) maxVal = total;
+  }
+  if (maxVal < 0.001) maxVal = 1;
+
+  pillars.forEach(function(p) {
+    html += '<div class="fb-timeline-row">';
+    html += '<div class="fb-timeline-label">' + p.name + '</div>';
+    html += '<div class="fb-timeline-track">';
+    for (var bi = 0; bi < numBuckets; bi++) {
+      var val = buckets[bi][p.key];
+      var h = Math.round((val / maxVal) * 100);
+      var burstCls = buckets[bi].burst ? ' style="position:relative;"' : '';
+      html += '<div class="fb-timeline-segment"' + burstCls + '>';
+      if (h > 0) {
+        html += '<div class="fb-timeline-bar ' + p.key + '" style="height:' + h + '%;"></div>';
+      }
+      if (buckets[bi].burst) {
+        html += '<div class="fb-timeline-burst"></div>';
+      }
+      html += '</div>';
+    }
+    html += '</div></div>';
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+
+
+function renderAxisHeatmap(state) {
+  var container = document.getElementById("axhm-container");
+  if (!container) return;
+
+  var axes = state && state.axes;
+  if (!axes || axes.length === 0) {
+    container.innerHTML = '<div class="axhm-empty">No axis data available</div>';
+    return;
+  }
+
+  var metrics = [
+    { key: "drift", label: "Drift", max: 1.0 },
+    { key: "velocity", label: "Vel", max: 0.5 },
+    { key: "reversal_rate", label: "Rev", max: 1.0 },
+    { key: "damping", label: "Damp", max: 1.0 },
+    { key: "momentum_score", label: "Mom", max: 1.0 }
+  ];
+
+  function heatColor(val, maxVal) {
+    var ratio = Math.min(Math.abs(val) / (maxVal || 1), 1.0);
+    var r, g, b;
+    if (ratio < 0.5) {
+      var t = ratio / 0.5;
+      r = Math.round(51 + t * 153);
+      g = Math.round(204 - t * 51);
+      b = 51;
+    } else {
+      var t = (ratio - 0.5) / 0.5;
+      r = 204;
+      g = Math.round(153 - t * 102);
+      b = 51;
+    }
+    return "rgb(" + r + "," + g + "," + b + ")";
+  }
+
+  var html = "";
+
+  html += '<div class="axhm-header-row">';
+  html += '<div class="axhm-label-col"></div>';
+  html += '<div class="axhm-cells">';
+  metrics.forEach(function(m) {
+    html += '<div class="axhm-metric-col">' + m.label + '</div>';
+  });
+  html += '</div></div>';
+
+  axes.forEach(function(axis) {
+    var name = axis.id || "?";
+    html += '<div class="axhm-row">';
+    html += '<div class="axhm-axis-name">' + name + '</div>';
+    html += '<div class="axhm-cells">';
+    metrics.forEach(function(m) {
+      var val = axis[m.key] || 0;
+      var bg = heatColor(val, m.max);
+      var display = val.toFixed(2);
+      html += '<div class="axhm-cell" style="background:' + bg + '">' + display + '</div>';
+    });
+    html += '</div></div>';
+  });
+
+  container.innerHTML = html;
 }
 
 fetchState();
