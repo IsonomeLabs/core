@@ -45,7 +45,9 @@ class SafetyConfig(BaseModel):
 class BridgeConfig(BaseModel):
     """Body bridge selection — connects SomaLayer to a sim or hw backend."""
 
-    engine: Literal["none", "mock", "pybullet", "mujoco", "hardware", "isaac"] = "none"
+    engine: Literal[
+        "none", "mock", "pybullet", "mujoco", "mujoco_mjx", "hardware", "isaac", "isaac_lab"
+    ] = "none"
     engine_options: dict = Field(default_factory=dict)
 
 

@@ -54,6 +54,16 @@ def build_body_bridge(config: AppConfig) -> BodyBridge | None:
 
         return MuJoCoBridgeAdapter(urdf_path, **bridge_cfg.engine_options)
 
+    if engine == "mujoco_mjx":
+        from isonome.bridge.adapters.mjx_adapter import MJXBridgeAdapter
+
+        return MJXBridgeAdapter(urdf_path, **bridge_cfg.engine_options)
+
+    if engine == "isaac_lab":
+        from isonome.bridge.adapters.isaac_lab_adapter import IsaacLabBridgeAdapter
+
+        return IsaacLabBridgeAdapter(urdf_path, **bridge_cfg.engine_options)
+
     if engine == "hardware":
         from isonome.bridge.adapters.hardware_adapter import HardwareBridgeAdapter
 
