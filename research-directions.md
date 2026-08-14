@@ -15,12 +15,12 @@ with findings written to /root/isonome-framework/research/<slug>.md.
 - **Publishability**: ★★★ | **Contribution**: ◆◆◇
 - **Summary**: Unified rate-distortion theory, context compression (AutoCompressors, semantic compression), surprisal-based attention (energy-gated), and Nixon's semantic rate-distortion for multi-agent communication (quotient POMDP, phase transition at R_crit). Gap: no work connects surprisal-weighted attention with RD-optimal context compression.
 
-## Active Research Directions
+### 3. Metacognitive Calibration — 2026-08-14
+- **Findings**: research/metacognitive-calibration.md
+- **Publishability**: ★★★ | **Contribution**: ◆◆◇
+- **Summary**: ECE has Ω(T^{-0.472}) lower bound; CDL achieves O(log T/√T). Temperature scaling insufficient for soft labels. Metacognition ≠ calibration (Oliveira's 5-dim probe, Cacioli's SDT). Self-calibration in open-ended environments needs decision-theoretic metrics (CDL) and metacognitive signals (epistemic vigilance, knowledge boundary).
 
-3. **Metacognitive Calibration**
-   - What are the theoretical limits of self-calibration in learned systems?
-   - Can ECE ever converge to zero in open-ended environments?
-   - Literature: Guo et al. "On Calibration of Modern Neural Networks", Bayesian deep learning
+## Active Research Directions
 
 4. **Multi-Agent Equilibrium**
    - How do multiple equilibrium-based agents coordinate without central control?
