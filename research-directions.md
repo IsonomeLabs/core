@@ -3,12 +3,14 @@
 Topics for deep research. Each entry should be investigated thoroughly,
 with findings written to /root/isonome-framework/research/<slug>.md.
 
-## Active Research Directions
+## Completed Research
 
-1. **Homeostatic Agent Regulation**
-   - How do biological systems maintain homeostasis under perturbation?
-   - Can we derive tighter bounds for oscillation prevention in multi-axis PID controllers?
-   - Literature: Ashby's Design for a Brain, Wiener's Cybernetics, Friston's free energy principle
+### 1. Homeostatic Agent Regulation — 2026-08-14
+- **Findings**: research/homeostatic-agent-regulation.md
+- **Publishability**: ★★☆ | **Contribution**: ◆◆◇
+- **Summary**: Connected mathematical infinitesimal homeostasis (singularity theory) to multi-axis PID control for equilibrium-based agents. Key insights: homeostasis matrix H and det(H)=0 as design constraint, period homeostasis for oscillatory axes, dynamic homeodynamics in multi-timescale systems, gap in multi-agent homeostasis coordination.
+
+## Active Research Directions
 
 2. **Information-Theoretic Attention**
    - What is the optimal compression ratio for context windows under different task types?
