@@ -10,12 +10,12 @@ with findings written to /root/isonome-framework/research/<slug>.md.
 - **Publishability**: ★★☆ | **Contribution**: ◆◆◇
 - **Summary**: Connected mathematical infinitesimal homeostasis (singularity theory) to multi-axis PID control for equilibrium-based agents. Key insights: homeostasis matrix H and det(H)=0 as design constraint, period homeostasis for oscillatory axes, dynamic homeodynamics in multi-timescale systems, gap in multi-agent homeostasis coordination.
 
-## Active Research Directions
+### 2. Information-Theoretic Attention — 2026-08-14
+- **Findings**: research/information-theoretic-attention.md
+- **Publishability**: ★★★ | **Contribution**: ◆◆◇
+- **Summary**: Unified rate-distortion theory, context compression (AutoCompressors, semantic compression), surprisal-based attention (energy-gated), and Nixon's semantic rate-distortion for multi-agent communication (quotient POMDP, phase transition at R_crit). Gap: no work connects surprisal-weighted attention with RD-optimal context compression.
 
-2. **Information-Theoretic Attention**
-   - What is the optimal compression ratio for context windows under different task types?
-   - How does surprisal-based attention compare to learned attention (transformer-style)?
-   - Literature: Shannon's information theory, attention mechanisms in transformers
+## Active Research Directions
 
 3. **Metacognitive Calibration**
    - What are the theoretical limits of self-calibration in learned systems?
